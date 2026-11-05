@@ -1,0 +1,32 @@
+{
+  "name": "twilio-whatsapp-integration",
+  "version": "1.0.0",
+  "description": "Minimal Express backend for sending and receiving WhatsApp messages through Twilio",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "tunnel": "ngrok http 3000",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "twilio",
+    "whatsapp",
+    "express"
+  ],
+  "license": "UNLICENSED",
+  "dependencies": {
+    "axios": "^1.21.0",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "multer": "^2.5.0",
+    "twilio": "^6.2.0"
+  },
+  "devDependencies": {
+    "supertest": "^7.3.1"
+  }
+}
