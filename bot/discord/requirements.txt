@@ -1,11 +1,3 @@
-Requirements for running the discord bot :
-1. Python 3 or higher
-2. Required libraries: disnake & dotenv
-3. discord bot token and channel ID
-
-
-steps to start the bot:
-1. Get you bot token and channel ID from discord developer portal.
-2. create a .env file and add the this to it:
-   BOT_TOKEN=your_bot_token
-   CHANNEL_ID=your_channel_id
+disnake>=2.12,<3
+python-dotenv>=1,<2
+aiohttp>=3.14.3,<4
