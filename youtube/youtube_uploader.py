@@ -11,6 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 import config
+from error_handler import handle_cli_error
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 TOKEN = Path(__file__).resolve().parent / "token.json"
@@ -100,7 +101,7 @@ def main():
             print(json.dumps(upload_video(args.file, args.title, args.description, args.privacy,
                                           [t.strip() for t in args.tags.split(",") if t.strip()], args.made_for_kids), indent=2))
     except Exception as exc:
-        parser.exit(1, f"Error: {exc}\n")
+        handle_cli_error(parser, exc)
 
 
 if __name__ == "__main__":
