@@ -1,6 +1,12 @@
 """Publish text, a single media item or an album to a Telegram chat."""
 
-from telegram_client import TelegramClient
+from telegram import (
+    Bot,
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaPhoto,
+    InputMediaVideo,
+)
 
 SUPPORTED_MEDIA_TYPES = {"photo", "video", "document", "audio", "animation"}
 ALBUM_MEDIA_TYPES = SUPPORTED_MEDIA_TYPES - {"animation"}
@@ -8,10 +14,25 @@ TEXT_LIMIT = 4096
 CAPTION_LIMIT = 1024
 MAX_ALBUM_SIZE = 10
 
+SINGLE_MEDIA_METHODS = {
+    "photo": "send_photo",
+    "video": "send_video",
+    "document": "send_document",
+    "audio": "send_audio",
+    "animation": "send_animation",
+}
+
+ALBUM_MEDIA_CLASSES = {
+    "photo": InputMediaPhoto,
+    "video": InputMediaVideo,
+    "document": InputMediaDocument,
+    "audio": InputMediaAudio,
+}
+
 
 class TelegramPublisher:
-    def __init__(self, client: TelegramClient):
-        self._client = client
+    def __init__(self, bot: Bot):
+        self._bot = bot
 
     async def publish(
         self,
@@ -47,13 +68,11 @@ class TelegramPublisher:
         return await self._send_album(chat, media, content, parse_mode)
 
     async def _send_text(self, chat_id, content, parse_mode):
-        payload = {
-            "chat_id": chat_id,
-            "text": content,
-        }
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
-        return await self._client.call("sendMessage", payload)
+        return await self._bot.send_message(
+            chat_id=chat_id,
+            text=content,
+            parse_mode=parse_mode,
+        )
 
     async def _send_single_media(self, chat_id, item, content, parse_mode):
         _validate_media(item)
@@ -73,8 +92,8 @@ class TelegramPublisher:
             if item_parse_mode:
                 payload["parse_mode"] = item_parse_mode
 
-        method = f"send{media_type.capitalize()}"
-        return await self._client.call(method, payload)
+        method = getattr(self._bot, SINGLE_MEDIA_METHODS[media_type])
+        return await method(**payload)
 
     async def _send_album(self, chat_id, media, content, parse_mode):
         album = []
@@ -85,28 +104,21 @@ class TelegramPublisher:
                     f"Telegram albums do not support {item['type']!r} media; "
                     f"use one of {sorted(ALBUM_MEDIA_TYPES)}."
                 )
-            entry = {
-                "type": item["type"],
-                "media": item["url"].strip(),
-            }
 
             # The post's content becomes the caption of the first item unless
             # the item provides its own caption.
             caption = item.get("caption") or (content if index == 0 else None)
+            payload = {"media": item["url"].strip()}
             if caption:
                 _validate_caption(caption)
-                entry["caption"] = caption
+                payload["caption"] = caption
                 item_parse_mode = item.get("parse_mode") or parse_mode
                 if item_parse_mode:
-                    entry["parse_mode"] = item_parse_mode
+                    payload["parse_mode"] = item_parse_mode
 
-            album.append(entry)
+            album.append(ALBUM_MEDIA_CLASSES[item["type"]](**payload))
 
-        payload = {
-            "chat_id": chat_id,
-            "media": album,
-        }
-        return await self._client.call("sendMediaGroup", payload)
+        return await self._bot.send_media_group(chat_id=chat_id, media=album)
 
 
 def _validate_media(item):
