@@ -11,16 +11,16 @@ Requires Python 3.10 or newer.
 4. Run `python Discord_autobot.py` and keep it running.
    Global slash commands may take time to appear after the first start.
 
-## Commands
+## Discord command
 
-- `/publish channel message media`: choose a text channel in the current server.
-  Provide text, an attachment (image/video/audio), or both. At least one is required.
-  The caller needs Manage Messages and permission to send in the chosen channel.
-- `/broadcast message title thumbnail_url`: the bot application owner can invoke
+- `/publish message title [thumbnail] [thumbnail_url]`: the bot application owner can invoke
   this from a server to send an embed to every server the bot has joined.
   Disnake checks application ownership (including its team ownership rules);
   server administrator status alone does not grant access.
-  The thumbnail must be an HTTP(S) URL. Each server receives one copy in its
+  Choose a local PNG, JPG, GIF or WebP file in the optional `thumbnail` field
+  (up to 25 MiB), or supply a direct, publicly accessible image URL in
+  `thumbnail_url`. Choose only one. Uploaded thumbnails require Attach Files
+  permission and must fit each destination server's upload limit. Each server receives one copy in its
   system channel if usable, otherwise the first accessible text channel with
   Send Messages and Embed Links. Servers without a usable channel are skipped.
   A private summary reports sent and skipped/failed counts. One failed delivery
@@ -32,9 +32,11 @@ Errors are handled separately in `error_handler.py`.
 ## HTTP API
 
 Running `python Discord_autobot.py` also starts an API at http://127.0.0.1:8080.
-No API key is required. It binds to your own computer by default. Anyone who can
-reach the API can post using the bot. Optional `.env` settings: `API_HOST` and
-`API_PORT`. Slash commands remain available. No browser CORS access is enabled.
+Set `DISCORD_API_SECRET` in `.env` to a strong random secret and send it in the
+`X-API-Key` header on requests to `/channels` and `/publish`. If the secret is
+blank, both routes return 503. The `/publish` command and `/health` remain available.
+Optional `.env` settings are `API_HOST` and `API_PORT`. Use HTTPS if you expose
+the API beyond your computer so the key stays private in transit.
 
 - `GET /health`: Discord connection status.
 - `GET /channels`: joined servers and accessible text channels, with string IDs.
@@ -45,22 +47,24 @@ reach the API can post using the bot. Optional `.env` settings: `API_HOST` and
   Files are uploaded by the caller; server-side file paths and URL downloads
   are not accepted. No format conversion occurs.
 
-PowerShell text example (replace the channel ID with one from `/channels`):
+Set `DISCORD_API_SECRET` in your PowerShell session to match the server's
+secret. Replace the channel ID below with one from `/channels`.
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8080/channels
-Invoke-RestMethod http://127.0.0.1:8080/publish -Method Post -ContentType 'application/json' -Body '{"channel_id":"123456789012345678","message":"Hello from outside Discord!"}'
+$headers = @{ "X-API-Key" = $env:DISCORD_API_SECRET }
+Invoke-RestMethod http://127.0.0.1:8080/channels -Headers $headers
+Invoke-RestMethod http://127.0.0.1:8080/publish -Headers $headers -Method Post -ContentType 'application/json' -Body '{"channel_id":"123456789012345678","message":"Hello from outside Discord!"}'
 ```
 
 Media upload example:
 
 ```powershell
-curl.exe http://127.0.0.1:8080/publish -F "channel_id=123456789012345678" -F "message=New video" -F "media=@C:\Videos\clip.mp4"
+curl.exe http://127.0.0.1:8080/publish -H "X-API-Key: $env:DISCORD_API_SECRET" -F "channel_id=123456789012345678" -F "message=New video" -F "media=@C:\Videos\clip.mp4"
 ```
 
 Successful publishing returns HTTP 201 with `message_id`, `channel_id`, and
 `url`. Errors return JSON with `error` and an appropriate HTTP status. A 503
-means Discord isn't connected yet. A failed/ambiguous delivery should be
+means Discord isn't connected yet or HTTP publishing is disabled. A failed/ambiguous delivery should be
 checked in Discord before retrying: requests have no deduplication key.
 
 Run mocked API checks: `python -m unittest test_api -v`.

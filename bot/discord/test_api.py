@@ -22,11 +22,27 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.bot.is_ready.return_value = True
         self.bot.get_channel.return_value = self.channel
         self.bot.guilds = []
-        self.http = TestClient(TestServer(create_app(self.bot)))
+        self.http = TestClient(TestServer(create_app(self.bot, "test-secret")),
+                               headers={"X-API-Key": "test-secret"})
         await self.http.start_server()
 
     async def asyncTearDown(self):
         await self.http.close()
+
+    async def test_authentication_required(self):
+        async with TestClient(TestServer(create_app(self.bot, "test-secret"))) as client:
+            for headers in ({}, {"X-API-Key": "wrong"}):
+                with self.subTest(headers=headers):
+                    self.assertEqual((await client.get("/channels", headers=headers)).status, 401)
+                    self.assertEqual((await client.post("/publish", headers=headers)).status, 401)
+        self.channel.send.assert_not_awaited()
+
+    async def test_no_secret_disables_protected_routes(self):
+        async with TestClient(TestServer(create_app(self.bot))) as client:
+            self.assertEqual((await client.get("/health")).status, 200)
+            self.assertEqual((await client.get("/channels")).status, 503)
+            self.assertEqual((await client.post("/publish")).status, 503)
+        self.channel.send.assert_not_awaited()
 
     async def test_text(self):
         response = await self.http.post('/publish', json={"channel_id": "123", "message": "Hello"})
@@ -52,6 +68,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         form.add_field('media', b'example', filename='hello.txt')
         response = await self.http.post('/publish', data=form)
         self.assertEqual(response.status, 201)
+        self.assertEqual(self.channel.send.await_args.kwargs["file"].filename, "hello.txt")
 
     async def test_server_upload_limit(self):
         form = FormData()

@@ -1,6 +1,7 @@
 import logging
 import tempfile
 from pathlib import Path
+from secrets import compare_digest
 
 import disnake
 from aiohttp import web
@@ -27,7 +28,16 @@ async def errors(request, handler):
         return web.json_response({"error": "Internal server error."}, status=500)
 
 
-def create_app(bot):
+def create_app(bot, api_secret=""):
+    secret = api_secret.encode("utf-8")
+
+    def require_api_key(request):
+        if not secret:
+            raise web.HTTPServiceUnavailable(reason="Discord HTTP publishing is disabled.")
+        supplied_key = request.headers.get("X-API-Key", "").encode("utf-8")
+        if not compare_digest(supplied_key, secret):
+            raise web.HTTPUnauthorized(reason="Invalid X-API-Key.")
+
     async def health(request):
         return web.json_response({"ready": bot.is_ready()})
 
@@ -36,6 +46,7 @@ def create_app(bot):
             raise web.HTTPServiceUnavailable(reason="Discord bot is not connected yet.")
 
     async def channels(request):
+        require_api_key(request)
         require_ready()
         return web.json_response({"servers": [
             {"id": str(g.id), "name": g.name, "channels": [
@@ -47,8 +58,9 @@ def create_app(bot):
         ]})
 
     async def publish(request):
+        require_api_key(request)
         require_ready()
-        with tempfile.TemporaryFile() as upload:
+        with tempfile.TemporaryDirectory() as folder, Path(folder, "media").open("w+b") as upload:
             filename = None
             size = 0
             if request.content_type == "application/json":
@@ -120,12 +132,12 @@ def create_app(bot):
     return app
 
 
-async def run(bot, token, host="127.0.0.1", port=8080):
-    runner = web.AppRunner(create_app(bot))
+async def run(bot, token, host="127.0.0.1", port=8080, *, api_secret=""):
+    runner = web.AppRunner(create_app(bot, api_secret))
     await runner.setup()
     try:
         await web.TCPSite(runner, host, port).start()
-        print(f"Posting API: http://{host}:{port} (no authentication)")
+        print(f"Discord HTTP API: http://{host}:{port}")
         await bot.start(token)
     finally:
         await runner.cleanup()

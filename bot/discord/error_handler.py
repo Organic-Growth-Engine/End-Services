@@ -6,9 +6,9 @@ from disnake.ext import commands
 logger = logging.getLogger(__name__)
 
 
-async def send_broadcast(channel, embed):
+async def send_broadcast(channel, embed, *, file=None):
     try:
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, file=file)
         return True
     except disnake.HTTPException:
         logger.warning("Broadcast failed in channel %s", channel.id)
@@ -23,10 +23,6 @@ class ErrorHandler(commands.Cog):
             message = "Only the bot owner can use this command."
         elif isinstance(error, commands.NoPrivateMessage):
             message = "Use this command in a server."
-        elif isinstance(error, commands.BotMissingPermissions):
-            message = "The bot is missing permissions: " + ", ".join(error.missing_permissions)
-        elif isinstance(error, commands.MissingPermissions):
-            message = "You need Manage Messages permission to publish."
         elif isinstance(error, (commands.BadArgument, commands.CheckFailure)):
             message = str(error)
         elif isinstance(error, disnake.Forbidden):

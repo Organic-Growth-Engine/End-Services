@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import os
 from pathlib import Path
@@ -13,100 +14,95 @@ from api_server import run
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-client = commands.InteractionBot(
-    intents=disnake.Intents.default(),
-    allowed_mentions=disnake.AllowedMentions.none(),
-)
-client.add_cog(ErrorHandler())
-
-
-@client.event
-async def on_ready():
-    print(f"Connected as {client.user}")
-
-
-@client.slash_command(description="Publish text or a media attachment to a channel.")
-@commands.guild_only()
-@commands.default_member_permissions(manage_messages=True)
-@commands.has_permissions(manage_messages=True)
-async def publish(
-    inter: disnake.ApplicationCommandInteraction,
-    channel: disnake.TextChannel,
-    message: str = commands.Param(default=None, max_length=2000),
-    media: disnake.Attachment = None,
-):
-    if channel.guild.id != inter.guild_id:
-        raise commands.BadArgument("Choose a channel in this server.")
-    if not (message and message.strip()) and media is None:
-        raise commands.BadArgument("Provide a message or a media attachment.")
-    user_permissions = channel.permissions_for(inter.author)
-    if not (user_permissions.view_channel and user_permissions.send_messages):
-        raise commands.CheckFailure("You cannot publish in that channel.")
-    permissions = channel.permissions_for(inter.guild.me)
-    required = ["view_channel", "send_messages"]
-    if media is not None:
-        required.append("attach_files")
-        if media.size > inter.guild.filesize_limit:
-            raise commands.BadArgument("That file exceeds this server's upload limit.")
-    missing = [name for name in required if not getattr(permissions, name)]
-    if missing:
-        raise commands.BotMissingPermissions(missing)
-    await inter.response.defer(ephemeral=True)
-    if media is None:
-        await channel.send(content=message)
-    else:
-        file = await media.to_file()
-        try:
-            await channel.send(content=message or None, file=file)
-        finally:
-            file.close()
-    await inter.edit_original_response(content=f"Published to {channel.mention}.")
-
-
-def broadcast_channel(guild):
+def broadcast_channel(guild, needs_attachment=False):
     for channel in [guild.system_channel, *guild.text_channels]:
         if channel is None:
             continue
         permissions = channel.permissions_for(guild.me)
-        if permissions.view_channel and permissions.send_messages and permissions.embed_links:
+        if (permissions.view_channel and permissions.send_messages and permissions.embed_links
+                and (not needs_attachment or permissions.attach_files)):
             return channel
     return None
 
 
-@client.slash_command(description="Send an announcement to every server (bot owner only).")
+@commands.slash_command(description="Send an announcement to every server (bot owner only).")
 @commands.guild_only()
 @commands.is_owner()
-async def broadcast(
+async def publish(
     inter: disnake.ApplicationCommandInteraction,
     message: str = commands.Param(min_length=1, max_length=4096),
     title: str = commands.Param(min_length=1, max_length=256),
-    thumbnail_url: str = commands.Param(max_length=2048),
+    thumbnail_url: str = commands.Param(default=None, max_length=2048),
+    thumbnail: disnake.Attachment = None,
 ):
     if not message.strip() or not title.strip():
         raise commands.BadArgument("Message and title cannot be blank.")
-    url = urlparse(thumbnail_url)
-    if url.scheme not in ("http", "https") or not url.netloc:
-        raise commands.BadArgument("Thumbnail must be an HTTP or HTTPS URL.")
+    if thumbnail_url and thumbnail:
+        raise commands.BadArgument("Choose either a thumbnail file or a URL.")
+    if thumbnail_url:
+        url = urlparse(thumbnail_url)
+        if url.scheme not in ("http", "https") or not url.netloc:
+            raise commands.BadArgument("Thumbnail must be a direct HTTP or HTTPS image URL.")
+    filename = None
+    if thumbnail:
+        extension = Path(thumbnail.filename).suffix.lower()
+        if extension not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            raise commands.BadArgument("Choose a PNG, JPG, GIF or WebP thumbnail.")
+        if thumbnail.size > 25 * 1024 * 1024:
+            raise commands.BadArgument("Thumbnail must be at most 25 MiB.")
+        filename = "thumbnail" + extension
+
     await inter.response.defer(ephemeral=True)
+    thumbnail_data = await thumbnail.read() if thumbnail else None
     embed = disnake.Embed(title=title, description=message)
-    embed.set_thumbnail(url=thumbnail_url)
+    if thumbnail:
+        embed.set_thumbnail(url="attachment://" + filename)
+    elif thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
     sent = 0
     skipped = 0
-    for guild in list(client.guilds):
-        channel = broadcast_channel(guild)
-        if channel is None or not await send_broadcast(channel, embed):
+    for guild in list(inter.bot.guilds):
+        channel = broadcast_channel(guild, needs_attachment=thumbnail is not None)
+        if channel is None or (thumbnail and len(thumbnail_data) > guild.filesize_limit):
             skipped += 1
-        else:
-            sent += 1
+            continue
+        file = disnake.File(io.BytesIO(thumbnail_data), filename=filename) if thumbnail else None
+        try:
+            if await send_broadcast(channel, embed, file=file):
+                sent += 1
+            else:
+                skipped += 1
+        finally:
+            if file is not None:
+                file.close()
     await inter.edit_original_response(
         content=f"Broadcast sent to {sent} server(s). Skipped or failed: {skipped}."
     )
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+async def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN is missing from .env")
-    asyncio.run(run(client, token, os.getenv("API_HOST", "127.0.0.1"),
-                    int(os.getenv("API_PORT", "8080"))))
+
+    client = commands.InteractionBot(
+        intents=disnake.Intents.default(),
+        allowed_mentions=disnake.AllowedMentions.none(),
+    )
+    client.add_slash_command(publish)
+    client.add_cog(ErrorHandler())
+
+    @client.event
+    async def on_ready():
+        print(f"Connected as {client.user}")
+
+    await run(
+        client, token, os.getenv("API_HOST", "127.0.0.1"),
+        int(os.getenv("API_PORT", "8080")),
+        api_secret=os.getenv("DISCORD_API_SECRET", ""),
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
