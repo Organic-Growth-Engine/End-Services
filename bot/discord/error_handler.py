@@ -6,15 +6,6 @@ from disnake.ext import commands
 logger = logging.getLogger(__name__)
 
 
-async def send_broadcast(channel, embed, *, file=None):
-    try:
-        await channel.send(embed=embed, file=file)
-        return True
-    except disnake.HTTPException:
-        logger.warning("Broadcast failed in channel %s", channel.id)
-        return False
-
-
 class ErrorHandler(commands.Cog):
     @commands.Cog.listener()
     async def on_slash_command_error(self, inter, error):
@@ -23,6 +14,8 @@ class ErrorHandler(commands.Cog):
             message = "Only the bot owner can use this command."
         elif isinstance(error, commands.NoPrivateMessage):
             message = "Use this command in a server."
+        elif isinstance(error, commands.MaxConcurrencyReached):
+            message = "A broadcast is already running. Wait for it to finish."
         elif isinstance(error, (commands.BadArgument, commands.CheckFailure)):
             message = str(error)
         elif isinstance(error, disnake.Forbidden):

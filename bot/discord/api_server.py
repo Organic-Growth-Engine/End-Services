@@ -1,5 +1,6 @@
 import logging
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from secrets import compare_digest
 
@@ -115,12 +116,9 @@ def create_app(bot, api_secret=""):
                 if size > channel.guild.filesize_limit:
                     raise web.HTTPRequestEntityTooLarge(max_size=channel.guild.filesize_limit, actual_size=size)
                 upload.seek(0)
-                media = disnake.File(upload, filename=filename)
-                try:
+                with closing(disnake.File(upload, filename=filename)) as media:
                     sent = await channel.send(content=message or None, file=media,
                                               allowed_mentions=disnake.AllowedMentions.none())
-                finally:
-                    media.close()
             else:
                 sent = await channel.send(content=message, allowed_mentions=disnake.AllowedMentions.none())
             return web.json_response({"message_id": str(sent.id), "channel_id": str(channel.id),
