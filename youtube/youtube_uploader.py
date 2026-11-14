@@ -4,15 +4,14 @@ import mimetypes
 import logging
 import os
 import tempfile
-from contextlib import ExitStack
-import threading
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from googleapiclient.discovery import Resource, build
 from googleapiclient.http import MediaFileUpload
 
 import config
@@ -20,11 +19,10 @@ from error_handler import handle_cli_error
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 TOKEN = Path(__file__).resolve().parent / "token.json"
-LOCK = threading.Lock()
 EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mpeg", ".mpg", ".m4v", ".wmv", ".flv", ".3gp"}
 
 
-def save_credentials(creds):
+def save_credentials(creds: Credentials) -> None:
     # Replace atomically so a crash cannot truncate the previously saved token.
     name = None
     try:
@@ -40,7 +38,7 @@ def save_credentials(creds):
             Path(name).unlink()
 
 
-def credentials(interactive=False):
+def credentials(interactive: bool = False) -> Credentials:
     creds = None
     try:
         if TOKEN.exists():
@@ -60,13 +58,13 @@ def credentials(interactive=False):
             "client_id": config.CLIENT_ID, "client_secret": config.CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost"]}}, SCOPES)
-        creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
+            "redirect_uris": [f"http://{config.OAUTH_HOST}"]}}, SCOPES)
+        creds = flow.run_local_server(host=config.OAUTH_HOST, port=config.OAUTH_PORT, access_type="offline", prompt="consent")
     save_credentials(creds)
     return creds
 
 
-def validate(title, description, privacy, tags):
+def validate(title: str, description: str, privacy: str, tags: list[str]) -> None:
     if not title.strip() or len(title) > 100 or any(c in title for c in "<>"):
         raise ValueError("Title must contain 1-100 characters and no < or >.")
     if len(description.encode("utf-8")) > 5000 or any(c in description for c in "<>"):
@@ -77,9 +75,19 @@ def validate(title, description, privacy, tags):
         raise ValueError("Combined tags exceed YouTube's 500-character limit.")
 
 
-def upload_video(file, title, description="", privacy="private", tags=None, made_for_kids=False):
-    tags = tags or []
-    validate(title, description, privacy, tags)
+class YouTubeResponse(TypedDict):
+    id: str
+    status: NotRequired[dict[str, Any]]
+
+
+class UploadResult(TypedDict):
+    video_id: str
+    url: str
+    status: dict[str, Any]
+    message: str
+
+
+def validate_video_file(file: str | Path) -> Path:
     path = Path(file).expanduser().resolve()
     if not path.is_file() or path.stat().st_size == 0:
         raise ValueError("Choose an existing, nonempty video file.")
@@ -87,22 +95,36 @@ def upload_video(file, title, description="", privacy="private", tags=None, made
         raise ValueError("Unsupported video extension. Use MP4, MOV, MKV, WebM or another supported video format.")
     if path.stat().st_size > config.MAX_VIDEO_BYTES:
         raise ValueError("Video exceeds MAX_VIDEO_BYTES.")
-    with LOCK, ExitStack() as resources:
-        youtube = build("youtube", "v3", credentials=credentials(), cache_discovery=False)
-        resources.callback(youtube.close)
+    return path
+
+
+def upload_video(file: str | Path, title: str, description: str = "",
+                 privacy: str = "private", tags: list[str] | None = None,
+                 made_for_kids: bool = False) -> UploadResult:
+    """Upload synchronously; callers coordinate access to the shared token file."""
+    tags = tags or []
+    validate(title, description, privacy, tags)
+    path = validate_video_file(file)
+    youtube_client: Resource = build("youtube", "v3", credentials=credentials(), cache_discovery=False)
+    try:
         media = MediaFileUpload(str(path), mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
                                 chunksize=8 * 1024 * 1024, resumable=True)
-        resources.callback(media.stream().close)
-        request = youtube.videos().insert(part="snippet,status", body={
-            "snippet": {"title": title, "description": description, "tags": tags, "categoryId": "22"},
-            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": made_for_kids}}, media_body=media)
-        result = None
-        while result is None:
-            progress, result = request.next_chunk(num_retries=5)
-            if progress:
-                logging.info("Uploading: %.0f%%", progress.progress() * 100)
-        return {"video_id": result["id"], "url": f"https://www.youtube.com/watch?v={result['id']}",
-                "status": result.get("status", {}), "message": "Uploaded; YouTube may still be processing the video."}
+        try:
+            request = youtube_client.videos().insert(part="snippet,status", body={
+                "snippet": {"title": title, "description": description, "tags": tags, "categoryId": "22"},
+                "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": made_for_kids}}, media_body=media)
+            result: YouTubeResponse | None = None
+            while result is None:
+                progress, result = request.next_chunk(num_retries=5)
+                if progress:
+                    logging.info("Uploading: %.0f%%", progress.progress() * 100)
+            video_id = result["id"]
+            return {"video_id": video_id, "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "status": result.get("status", {}), "message": "Uploaded; YouTube may still be processing the video."}
+        finally:
+            media.stream().close()
+    finally:
+        youtube_client.close()
 
 
 def main():

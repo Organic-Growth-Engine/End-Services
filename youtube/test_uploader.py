@@ -1,5 +1,7 @@
 import io
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -25,7 +27,7 @@ class ApiTests(unittest.TestCase):
         self.addCleanup(self.upload.stop)
 
     def post(self, body=b'video', **fields):
-        return self.client.post('/upload', headers=self.headers,
+        return self.client.post('/uploading', headers=self.headers,
                                 files={'file': ('clip.mp4', body, 'video/mp4')},
                                 data={'title': 'Test', **fields})
 
@@ -41,11 +43,11 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(paths[0].exists())
 
     def test_auth_before_body(self):
-        self.assertEqual(self.client.post('/upload', content=b'invalid').status_code, 401)
+        self.assertEqual(self.client.post('/uploading', content=b'invalid').status_code, 401)
         with patch.object(config, 'UPLOAD_API_SECRET', ''):
             self.assertEqual(self.post().status_code, 503)
         self.send.assert_not_called()
-        self.assertEqual(self.client.get('/health').status_code, 200)
+        self.assertEqual(self.client.get('/health').status_code, 404)
 
     def test_invalid_metadata_and_empty_file(self):
         for fields in ({'title': ' '}, {'title': 'x'*101}, {'description': 'é'*2501},
@@ -59,7 +61,7 @@ class ApiTests(unittest.TestCase):
         with patch.object(api, 'MAX_VIDEO_BYTES', 4):
             self.assertEqual(self.post().status_code, 413)
         for length, status in [('garbage', 400), ('-1', 400), (str(10**15), 413)]:
-            response = self.client.post('/upload', headers={**self.headers, 'Content-Length': length})
+            response = self.client.post('/uploading', headers={**self.headers, 'Content-Length': length})
             self.assertEqual(response.status_code, status)
         self.send.assert_not_called()
 
@@ -69,14 +71,14 @@ class ApiTests(unittest.TestCase):
             yield b'x' * 1000
             yield b'\r\n--test--\r\n'
         with patch.object(api, 'MAX_VIDEO_BYTES', 100), patch.object(api, 'MULTIPART_OVERHEAD_BYTES', 100):
-            response = self.client.post('/upload', headers={**self.headers,
+            response = self.client.post('/uploading', headers={**self.headers,
                 'Content-Type': 'multipart/form-data; boundary=test'}, content=chunks())
         self.assertEqual(response.status_code, 413)
         self.assertFalse(api.UPLOAD_SLOT.locked())
         self.send.assert_not_called()
 
     def test_extra_files_and_oversized_fields(self):
-        response = self.client.post('/upload', headers=self.headers, data={'title': 'Test'},
+        response = self.client.post('/uploading', headers=self.headers, data={'title': 'Test'},
             files=[('file', ('a.mp4', b'a')), ('extra', ('b.mp4', b'b'))])
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.post(description='x'*20000).status_code, 400)
@@ -100,6 +102,55 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn('sensitive', response.text)
         self.assertFalse(paths[0].exists())
         self.assertFalse(api.UPLOAD_SLOT.locked())
+
+    def test_missing_fields_and_invalid_boolean(self):
+        response = self.client.post('/uploading', headers=self.headers,
+                                    files={'file': ('clip.mp4', b'video')})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.post(made_for_kids='invalid').status_code, 422)
+        self.assertEqual(self.client.post('/uploading', headers=self.headers,
+                                         data={'title': 'Test'}).status_code, 422)
+        self.assertFalse(api.UPLOAD_SLOT.locked())
+        self.send.assert_not_called()
+
+    def test_metadata_conversion_and_form_cleanup(self):
+        streams = []
+        original = api.upload_from_file
+        def capture(file, metadata):
+            streams.append(file.file)
+            return original(file, metadata)
+        with patch.object(api, 'upload_from_file', side_effect=capture):
+            self.assertEqual(self.post(made_for_kids='true').status_code, 201)
+        self.assertIs(self.send.call_args.args[-1], True)
+        self.assertTrue(streams[0].closed)
+
+    def test_overlap_rejected_while_worker_runs(self):
+        started, finish = threading.Event(), threading.Event()
+        def slow_upload(*args):
+            started.set()
+            if not finish.wait(5):
+                raise TimeoutError('test worker timed out')
+            return {'video_id': 'abc'}
+        self.send.side_effect = slow_upload
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.post)
+            try:
+                self.assertTrue(started.wait(5))
+                self.assertEqual(self.post().status_code, 429)
+                self.assertEqual(self.client.get('/health').status_code, 404)
+            finally:
+                finish.set()
+            self.assertEqual(pending.result(timeout=5).status_code, 201)
+        self.assertFalse(api.UPLOAD_SLOT.locked())
+
+    def test_openapi_documents_upload_form(self):
+        schema = self.client.get('/openapi.json').json()
+        self.assertEqual(set(schema['paths']), {'/uploading'})
+        self.assertEqual(self.client.post('/upload').status_code, 404)
+        form = schema['paths']['/uploading']['post']['requestBody']['content']['multipart/form-data']['schema']
+        self.assertIn('file', form['required'])
+        self.assertIn('title', form['required'])
+        self.assertEqual(form['properties']['file']['format'], 'binary')
 
 
 class UploaderTests(unittest.TestCase):
@@ -142,6 +193,9 @@ class UploaderTests(unittest.TestCase):
                 uploader.credentials()
             self.assertIs(uploader.credentials(interactive=True), fresh)
         self.assertEqual(uploader.TOKEN.read_text(), '{"valid":true}')
+        flow.run_local_server.assert_called_once_with(
+            host=config.OAUTH_HOST, port=config.OAUTH_PORT,
+            access_type='offline', prompt='consent')
 
     def test_corrupt_token_can_relogin(self):
         uploader.TOKEN.write_text('invalid JSON')
