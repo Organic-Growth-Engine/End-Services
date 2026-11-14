@@ -1,12 +1,13 @@
+import io
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import disnake
-from aiohttp import FormData
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
-from api_server import create_app
+from api_server import MAX_UPLOAD, create_app
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +58,24 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.http.post('/publish', data=form)
         self.assertEqual(response.status, 201)
         self.assertEqual(self.channel.send.await_args.kwargs["file"].filename, "hello.txt")
+
+    async def test_mounted_app_accepts_upload_above_one_mib(self):
+        payload = b'x' * (2 * 1024 * 1024)
+        self.channel.guild.filesize_limit = MAX_UPLOAD
+        async def capture(**kwargs):
+            self.assertEqual(kwargs["file"].fp.read(), payload)
+            return SimpleNamespace(id=456, jump_url="test")
+        self.channel.send.side_effect = capture
+        parent = web.Application(client_max_size=MAX_UPLOAD)
+        parent.add_subapp('/discord/', create_app(self.bot))
+        async with TestClient(TestServer(parent)) as client:
+            form = FormData()
+            form.add_field('channel_id', '123')
+            form.add_field('media', io.BytesIO(payload), filename='clip.mp4')
+            response = await client.post('/discord/publish', data=form)
+            self.assertEqual(response.status, 201)
+            self.assertEqual((await response.json())["message_id"], "456")
+        self.channel.send.assert_awaited_once()
 
     async def test_server_upload_limit(self):
         form = FormData()

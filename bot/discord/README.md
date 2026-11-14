@@ -48,8 +48,20 @@ internal HTTP routes do not require a separate API key. Mount them behind the
 parent application's access controls, not directly on a public listener.
 
 From the repository root, use `bot.discord.main.create_bot(store_path=...)` to build the Discord client and
-`bot.discord.api_server.create_app(bot)` to build its aiohttp application. The parent can
-mount the returned app with `app.add_subapp("/discord/", create_app(bot))`.
+`bot.discord.api_server.create_app(bot)` to build its aiohttp application. Configure the upload limit on the **parent** app when mounting it:
+
+```python
+from aiohttp import web
+from bot.discord.api_server import MAX_UPLOAD, create_app
+
+# bot is the client returned by create_bot(...).
+app = web.Application(client_max_size=MAX_UPLOAD)
+app.add_subapp("/discord/", create_app(bot))
+```
+
+The parent's default limit is 1 MiB; the child app's limit does not override it.
+For an existing parent app, set `client_max_size` when that app is constructed.
+
 Run `bot.start(token)` as a task in the parent's async lifecycle and call
 `await bot.close()` and await that task during shutdown. Pass a persistent
 SQLite path for channel selections. Importing `main` does not load `.env`,
