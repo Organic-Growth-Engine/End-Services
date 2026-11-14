@@ -12,7 +12,7 @@
 └── youtube
 ```
 
-## YouTube upload demo
+## YouTube upload component
 
-See [YouTube setup and demo instructions](youtube/README.md). The component exposes
-POST `/uploading` for a local demonstration; integration with the main app is planned.
+See [YouTube setup and upload instructions](youtube/README.md). The component exposes
+POST `/uploading`, accepting a video and channel OAuth credentials from the main app.

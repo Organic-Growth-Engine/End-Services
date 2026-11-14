@@ -1,66 +1,40 @@
-import argparse
-import json
-import mimetypes
 import logging
-import os
-import tempfile
+import mimetypes
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource, build
 from googleapiclient.http import MediaFileUpload
 
 import config
-from error_handler import handle_cli_error
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-TOKEN = Path(__file__).resolve().parent / "token.json"
 EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mpeg", ".mpg", ".m4v", ".wmv", ".flv", ".3gp"}
 
 
-def save_credentials(creds: Credentials) -> None:
-    # Replace atomically so a crash cannot truncate the previously saved token.
-    name = None
+def load_credentials(info: dict[str, Any]) -> Credentials:
+    """Use authorized-user credentials supplied by the calling app."""
+    required = ("client_id", "client_secret", "refresh_token")
+    if not isinstance(info, dict) or any(
+        not isinstance(info.get(key), str) or not info[key].strip() for key in required
+    ):
+        raise ValueError("Channel credentials require client_id, client_secret and refresh_token.")
+    # Pass only supported credential fields, never a caller-controlled token URL.
+    fields = {key: info[key] for key in (*required, "token", "expiry") if key in info}
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=TOKEN.parent,
-                                         prefix=".token-", delete=False) as token_file:
-            name = token_file.name
-            token_file.write(creds.to_json())
-            token_file.flush()
-            os.fsync(token_file.fileno())
-        os.replace(name, TOKEN)
-    finally:
-        if name and Path(name).exists():
-            Path(name).unlink()
-
-
-def credentials(interactive: bool = False) -> Credentials:
-    creds = None
-    try:
-        if TOKEN.exists():
-            creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
+        creds = Credentials.from_authorized_user_info(fields, SCOPES)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("Invalid channel credentials JSON.") from exc
+    if not creds.valid:
+        try:
             creds.refresh(Request())
-    except (ValueError, RefreshError) as exc:
-        if not interactive:
-            raise RuntimeError("Saved authorization is invalid. Run python youtube_uploader.py login again.") from exc
-        creds = None
-    if not creds or not creds.valid:
-        if not interactive:
-            raise RuntimeError("Run python youtube_uploader.py login first.")
-        if not config.CLIENT_ID or not config.CLIENT_SECRET:
-            raise ValueError("Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET first.")
-        flow = InstalledAppFlow.from_client_config({"installed": {
-            "client_id": config.CLIENT_ID, "client_secret": config.CLIENT_SECRET,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [f"http://{config.OAUTH_HOST}"]}}, SCOPES)
-        creds = flow.run_local_server(host=config.OAUTH_HOST, port=config.OAUTH_PORT, access_type="offline", prompt="consent")
-    save_credentials(creds)
+        except RefreshError as exc:
+            raise RuntimeError("Channel authorization is invalid; reconnect it in the calling app.") from exc
+    if not creds.valid:
+        raise RuntimeError("Channel authorization is invalid; reconnect it in the calling app.")
     return creds
 
 
@@ -98,14 +72,16 @@ def validate_video_file(file: str | Path) -> Path:
     return path
 
 
-def upload_video(file: str | Path, title: str, description: str = "",
+def upload_video(file: str | Path, channel_credentials: dict[str, Any],
+                 title: str | None = None, description: str = "",
                  privacy: str = "private", tags: list[str] | None = None,
                  made_for_kids: bool = False) -> UploadResult:
-    """Upload synchronously; callers coordinate access to the shared token file."""
+    """Upload using request-supplied channel authorization; never persist credentials."""
+    path = validate_video_file(file)
+    title = path.stem if title is None else title
     tags = tags or []
     validate(title, description, privacy, tags)
-    path = validate_video_file(file)
-    youtube_client: Resource = build("youtube", "v3", credentials=credentials(), cache_discovery=False)
+    youtube_client: Resource = build("youtube", "v3", credentials=load_credentials(channel_credentials), cache_discovery=False)
     try:
         media = MediaFileUpload(str(path), mimetype=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
                                 chunksize=8 * 1024 * 1024, resumable=True)
@@ -125,35 +101,3 @@ def upload_video(file: str | Path, title: str, description: str = "",
             media.stream().close()
     finally:
         youtube_client.close()
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("login")
-    sub.add_parser("serve")
-    upload = sub.add_parser("upload")
-    upload.add_argument("file")
-    upload.add_argument("--title", required=True)
-    upload.add_argument("--description", default="")
-    upload.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
-    upload.add_argument("--tags", default="")
-    upload.add_argument("--made-for-kids", action="store_true")
-    args = parser.parse_args()
-    try:
-        if args.command == "login":
-            credentials(interactive=True)
-            print("Connected. Future uploads reuse token.json.")
-        elif args.command == "serve":
-            import uvicorn
-            uvicorn.run("api:app", host=config.HOST, port=config.PORT)
-        else:
-            print(json.dumps(upload_video(args.file, args.title, args.description, args.privacy,
-                                          [t.strip() for t in args.tags.split(",") if t.strip()], args.made_for_kids), indent=2))
-    except Exception as exc:
-        handle_cli_error(parser, exc)
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    main()

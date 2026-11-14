@@ -1,4 +1,4 @@
-"""Shared error handling for the upload API and command-line entry point."""
+"""Error handling for the upload endpoint."""
 
 import logging
 from contextlib import contextmanager
@@ -30,10 +30,5 @@ def handle_upload_errors():
         logger.error("Upload failed (%s)", type(exc).__name__)
         raise HTTPException(
             502,
-            "Upload failed. Check connection and Google authorization; run login again if necessary.",
+            "Upload failed. Check the connection and supplied channel authorization.",
         ) from exc
-
-
-def handle_cli_error(parser, error):
-    """Report a command failure and exit with the existing nonzero status."""
-    parser.exit(1, f"Error: {error}\n")
