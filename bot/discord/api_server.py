@@ -1,8 +1,5 @@
 import logging
-import tempfile
 from contextlib import closing
-from pathlib import Path
-from secrets import compare_digest
 
 import disnake
 from aiohttp import web
@@ -29,16 +26,8 @@ async def errors(request, handler):
         return web.json_response({"error": "Internal server error."}, status=500)
 
 
-def create_app(bot, api_secret=""):
-    secret = api_secret.encode("utf-8")
-
-    def require_api_key(request):
-        if not secret:
-            raise web.HTTPServiceUnavailable(reason="Discord HTTP publishing is disabled.")
-        supplied_key = request.headers.get("X-API-Key", "").encode("utf-8")
-        if not compare_digest(supplied_key, secret):
-            raise web.HTTPUnauthorized(reason="Invalid X-API-Key.")
-
+def create_app(bot):
+    """Internal API; the parent application owns access control and bot startup."""
     async def health(request):
         return web.json_response({"ready": bot.is_ready()})
 
@@ -47,7 +36,6 @@ def create_app(bot, api_secret=""):
             raise web.HTTPServiceUnavailable(reason="Discord bot is not connected yet.")
 
     async def channels(request):
-        require_api_key(request)
         require_ready()
         return web.json_response({"servers": [
             {"id": str(g.id), "name": g.name, "channels": [
@@ -59,79 +47,53 @@ def create_app(bot, api_secret=""):
         ]})
 
     async def publish(request):
-        require_api_key(request)
         require_ready()
-        with tempfile.TemporaryDirectory() as folder, Path(folder, "media").open("w+b") as upload:
-            filename = None
-            size = 0
-            if request.content_type == "application/json":
-                data = await request.json()
-                if not isinstance(data, dict):
-                    raise web.HTTPBadRequest(reason="Expected a JSON object.")
-            elif request.content_type == "multipart/form-data":
-                data = {}
-                reader = await request.multipart()
-                count = 0
-                while (part := await reader.next()) is not None:
-                    count += 1
-                    if count > 3:
-                        raise web.HTTPBadRequest(reason="Use channel_id, message and one media file.")
-                    if part.name == "media" and part.filename:
-                        if filename is not None:
-                            raise web.HTTPBadRequest(reason="Only one media file is supported.")
-                        filename = Path(part.filename.replace("\\", "/")).name or "upload"
-                        while chunk := await part.read_chunk():
-                            size += len(chunk)
-                            if size > MAX_UPLOAD:
-                                raise web.HTTPRequestEntityTooLarge(max_size=MAX_UPLOAD, actual_size=size)
-                            upload.write(chunk)
-                    elif part.name in ("channel_id", "message") and not part.filename:
-                        value = bytearray()
-                        while chunk := await part.read_chunk():
-                            value.extend(chunk)
-                            if len(value) > 8192:
-                                raise web.HTTPBadRequest(reason="Form field is too long.")
-                        data[part.name] = value.decode("utf-8")
-                    else:
-                        raise web.HTTPBadRequest(reason="Unknown multipart field.")
-            else:
-                raise web.HTTPUnsupportedMediaType(reason="Use JSON or multipart/form-data.")
-            channel_id = data.get("channel_id")
-            if not isinstance(channel_id, str) or not channel_id.isascii() or not channel_id.isdigit() or len(channel_id) > 20:
-                raise web.HTTPBadRequest(reason="channel_id must be a Discord ID string.")
-            message = data.get("message", "")
-            if not isinstance(message, str) or len(message) > 2000:
-                raise web.HTTPBadRequest(reason="message must be text of at most 2000 characters.")
-            if not message.strip() and filename is None:
-                raise web.HTTPBadRequest(reason="Provide message or media.")
-            channel = bot.get_channel(int(channel_id))
-            if not isinstance(channel, disnake.TextChannel):
-                raise web.HTTPNotFound(reason="Choose a text channel from GET /channels.")
-            permissions = channel.permissions_for(channel.guild.me)
-            if not (permissions.view_channel and permissions.send_messages):
-                raise web.HTTPForbidden(reason="Bot cannot send in that channel.")
-            if filename is not None:
-                if not permissions.attach_files:
-                    raise web.HTTPForbidden(reason="Bot needs Attach Files permission.")
-                if size > channel.guild.filesize_limit:
-                    raise web.HTTPRequestEntityTooLarge(max_size=channel.guild.filesize_limit, actual_size=size)
-                upload.seek(0)
-                with closing(disnake.File(upload, filename=filename)) as media:
-                    sent = await channel.send(content=message or None, file=media,
-                                              allowed_mentions=disnake.AllowedMentions.none())
-            else:
-                sent = await channel.send(content=message, allowed_mentions=disnake.AllowedMentions.none())
-            return web.json_response({"message_id": str(sent.id), "channel_id": str(channel.id),
-                                      "url": sent.jump_url}, status=201)
+        if request.content_type == "application/json":
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise web.HTTPBadRequest(reason="Expected a JSON object.")
+        elif request.content_type == "multipart/form-data":
+            data = await request.post()
+        else:
+            raise web.HTTPUnsupportedMediaType(reason="Use JSON or multipart/form-data.")
 
-    app = web.Application(middlewares=[errors], client_max_size=64 * 1024)
+        channel_id = data.get("channel_id")
+        if not isinstance(channel_id, str) or not channel_id.isdecimal():
+            raise web.HTTPBadRequest(reason="channel_id must be a Discord ID string.")
+        message = data.get("message", "")
+        media = data.get("media")
+        if not isinstance(message, str) or len(message) > 2000:
+            raise web.HTTPBadRequest(reason="message must be text of at most 2000 characters.")
+        if media is not None and not isinstance(media, web.FileField):
+            raise web.HTTPBadRequest(reason="media must be an uploaded file.")
+        if not message.strip() and media is None:
+            raise web.HTTPBadRequest(reason="Provide message or media.")
+
+        channel = bot.get_channel(int(channel_id))
+        if not isinstance(channel, disnake.TextChannel):
+            raise web.HTTPNotFound(reason="Choose a text channel from GET /channels.")
+        kwargs = {"content": message or None, "allowed_mentions": disnake.AllowedMentions.none()}
+        if media is not None:
+            size = media.file.seek(0, 2)
+            limit = min(MAX_UPLOAD, channel.guild.filesize_limit)
+            if size > limit:
+                raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=size)
+            media.file.seek(0)
+            with closing(disnake.File(media.file, filename=media.filename)) as file:
+                sent = await channel.send(**kwargs, file=file)
+        else:
+            sent = await channel.send(**kwargs)
+        return web.json_response({"message_id": str(sent.id), "channel_id": str(channel.id),
+                                  "url": sent.jump_url}, status=201)
+
+    app = web.Application(middlewares=[errors], client_max_size=MAX_UPLOAD)
     app.add_routes([web.get('/health', health), web.get('/channels', channels),
                     web.post('/publish', publish)])
     return app
 
 
-async def run(bot, token, host="127.0.0.1", port=8080, *, api_secret=""):
-    runner = web.AppRunner(create_app(bot, api_secret))
+async def run(bot, token, host="127.0.0.1", port=8080):
+    runner = web.AppRunner(create_app(bot))
     await runner.setup()
     try:
         await web.TCPSite(runner, host, port).start()

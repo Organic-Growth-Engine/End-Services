@@ -1,5 +1,6 @@
 """Guild subscriptions and owner-only announcement delivery."""
 
+import asyncio
 import io
 import logging
 from contextlib import closing, contextmanager
@@ -8,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import disnake
+from aiohttp import ClientError
 from disnake.ext import commands
 
 logger = logging.getLogger(__name__)
@@ -79,7 +81,7 @@ async def send_broadcast(channel, embed, *, file=None):
     try:
         await channel.send(embed=embed, file=file, allowed_mentions=disnake.AllowedMentions.none())
         return True
-    except disnake.HTTPException:
+    except (disnake.HTTPException, ClientError, asyncio.TimeoutError, OSError):
         logger.warning("Broadcast failed in channel %s", channel.id)
         return False
 

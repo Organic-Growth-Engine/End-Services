@@ -41,14 +41,23 @@ handled separately in `error_handler.py`.
 Migration: the old `/publish message title ...` command is now `/broadcast`.
 Every server owner must opt in with `/publish channel` after upgrading.
 
-## HTTP API
+## Integration and HTTP API
 
-Running `python main.py` also starts an API at http://127.0.0.1:8080.
-Set `DISCORD_API_SECRET` in `.env` to a strong random secret and send it in the
-`X-API-Key` header on requests to `/channels` and `/publish`. If the secret is
-blank, both routes return 503. The slash commands and `/health` remain available.
-Optional `.env` settings are `API_HOST` and `API_PORT`. Use HTTPS if you expose
-the API beyond your computer so the key stays private in transit.
+The parent application owns authentication and access control. This module's
+internal HTTP routes do not require a separate API key. Mount them behind the
+parent application's access controls, not directly on a public listener.
+
+From the repository root, use `bot.discord.main.create_bot(store_path=...)` to build the Discord client and
+`bot.discord.api_server.create_app(bot)` to build its aiohttp application. The parent can
+mount the returned app with `app.add_subapp("/discord/", create_app(bot))`.
+Run `bot.start(token)` as a task in the parent's async lifecycle and call
+`await bot.close()` and await that task during shutdown. Pass a persistent
+SQLite path for channel selections. Importing `main` does not load `.env`,
+start the bot, or open a port.
+
+For local testing, `python main.py` still runs both the bot and the API at
+http://127.0.0.1:8080. `API_HOST` and `API_PORT` can override that address.
+Discord's server-owner and bot-owner checks still apply to slash commands.
 
 - `GET /health`: Discord connection status.
 - `GET /channels`: joined servers and accessible text channels, with string IDs.
@@ -60,24 +69,22 @@ the API beyond your computer so the key stays private in transit.
   Files are uploaded by the caller; server-side file paths and URL downloads
   are not accepted. No format conversion occurs.
 
-Set `DISCORD_API_SECRET` in your PowerShell session to match the server's
-secret. Replace the channel ID below with one from `/channels`.
+Replace the channel ID below with one from `/channels`.
 
 ```powershell
-$headers = @{ "X-API-Key" = $env:DISCORD_API_SECRET }
-Invoke-RestMethod http://127.0.0.1:8080/channels -Headers $headers
-Invoke-RestMethod http://127.0.0.1:8080/publish -Headers $headers -Method Post -ContentType 'application/json' -Body '{"channel_id":"123456789012345678","message":"Hello from outside Discord!"}'
+Invoke-RestMethod http://127.0.0.1:8080/channels
+Invoke-RestMethod http://127.0.0.1:8080/publish -Method Post -ContentType 'application/json' -Body '{"channel_id":"123456789012345678","message":"Hello from outside Discord!"}'
 ```
 
 Media upload example:
 
 ```powershell
-curl.exe http://127.0.0.1:8080/publish -H "X-API-Key: $env:DISCORD_API_SECRET" -F "channel_id=123456789012345678" -F "message=New video" -F "media=@C:\Videos\clip.mp4"
+curl.exe http://127.0.0.1:8080/publish -F "channel_id=123456789012345678" -F "message=New video" -F "media=@C:\Videos\clip.mp4"
 ```
 
 Successful publishing returns HTTP 201 with `message_id`, `channel_id`, and
 `url`. Errors return JSON with `error` and an appropriate HTTP status. A 503
-means Discord isn't connected yet or HTTP publishing is disabled. A failed/ambiguous delivery should be
+means Discord isn't connected yet. A failed/ambiguous delivery should be
 checked in Discord before retrying: requests have no deduplication key.
 
 Run all mocked checks from this directory: `python -m unittest discover -v`.

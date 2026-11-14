@@ -22,27 +22,15 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.bot.is_ready.return_value = True
         self.bot.get_channel.return_value = self.channel
         self.bot.guilds = []
-        self.http = TestClient(TestServer(create_app(self.bot, "test-secret")),
-                               headers={"X-API-Key": "test-secret"})
+        self.http = TestClient(TestServer(create_app(self.bot)))
         await self.http.start_server()
 
     async def asyncTearDown(self):
         await self.http.close()
 
-    async def test_authentication_required(self):
-        async with TestClient(TestServer(create_app(self.bot, "test-secret"))) as client:
-            for headers in ({}, {"X-API-Key": "wrong"}):
-                with self.subTest(headers=headers):
-                    self.assertEqual((await client.get("/channels", headers=headers)).status, 401)
-                    self.assertEqual((await client.post("/publish", headers=headers)).status, 401)
-        self.channel.send.assert_not_awaited()
-
-    async def test_no_secret_disables_protected_routes(self):
-        async with TestClient(TestServer(create_app(self.bot))) as client:
-            self.assertEqual((await client.get("/health")).status, 200)
-            self.assertEqual((await client.get("/channels")).status, 503)
-            self.assertEqual((await client.post("/publish")).status, 503)
-        self.channel.send.assert_not_awaited()
+    async def test_internal_routes_need_no_separate_key(self):
+        self.assertEqual((await self.http.get("/health")).status, 200)
+        self.assertEqual((await self.http.get("/channels")).status, 200)
 
     async def test_text(self):
         response = await self.http.post('/publish', json={"channel_id": "123", "message": "Hello"})
@@ -79,7 +67,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.channel.send.assert_not_awaited()
 
     async def test_permissions(self):
-        self.channel.permissions_for.return_value.send_messages = False
+        self.channel.send.side_effect = disnake.Forbidden(
+            SimpleNamespace(status=403, reason="Forbidden"), "denied")
         response = await self.http.post('/publish', json={"channel_id": "123", "message": "Hello"})
         self.assertEqual(response.status, 403)
 

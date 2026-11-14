@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import disnake
+from aiohttp import ClientConnectionError
 from disnake.ext import commands
 
 from channel_store import ChannelStore
@@ -58,7 +60,14 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(commands.NoPrivateMessage):
             require_guild_owner(self.inter)
         self.inter.bot.is_owner = AsyncMock(return_value=False)
-        owner_check = Publisher.broadcast.checks[0]
+        # Checks are not guaranteed to retain decorator order.
+        self.inter.guild_id = 1
+        async def owner_check(inter):
+            for check in Publisher.broadcast.checks:
+                result = check(inter)
+                if asyncio.iscoroutine(result):
+                    await result
+            return True
         with self.assertRaises(commands.NotOwner):
             await owner_check(self.inter)
         self.inter.bot.is_owner.return_value = True
@@ -124,6 +133,20 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.channel.send.await_args.kwargs['file'].fp.closed)
         self.inter.edit_original_response.assert_awaited_once_with(
             content='Broadcast sent to 1 server(s). Skipped or failed: 2.')
+
+    async def test_network_failure_does_not_stop_later_servers(self):
+        guild2, channel2 = make_guild(2, 20)
+        self.inter.bot.guilds.append(guild2)
+        self.store.set(1, 10)
+        self.store.set(2, 20)
+        for error in (ClientConnectionError("lost connection"), asyncio.TimeoutError()):
+            with self.subTest(error=type(error).__name__):
+                self.channel.send.side_effect = error
+                channel2.send.reset_mock()
+                await Publisher.broadcast.callback(self.publisher, self.inter, 'Hello', 'Title', None, None)
+                channel2.send.assert_awaited_once()
+                self.inter.edit_original_response.assert_awaited_with(
+                    content='Broadcast sent to 1 server(s). Skipped or failed: 1.')
 
     async def test_upload_limit_and_text_broadcast(self):
         self.store.set(1, 10)
