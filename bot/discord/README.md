@@ -1,103 +1,123 @@
-# Discord publisher
+# Discord publishing integration
 
-Requires Python 3.10 or newer.
+A small adapter for the parent dashboard: list eligible channels and send a
+prepared image/video and caption to a selected text channel. No caption generation,
+conversion, analytics, scheduling, or queues. Discord slash commands are also
+supported through a single `/publish` command. No subscription database is needed.
 
-1. Install dependencies: `python -m pip install -r requirements.txt`
-2. Create `.env` beside `main.py` containing `BOT_TOKEN=your_bot_token`.
-   No channel ID is needed. Never commit the token.
-3. Invite the application with the `bot` and `applications.commands` scopes.
-   Grant View Channel, Send Messages, Attach Files and Embed Links in destination
-   channels. No privileged intents are required.
-4. Run `python main.py` and keep it running.
-   Global slash commands may take time to appear after the first start.
+Requires Python 3.10+ and the packages in `requirements.txt`. Invite the bot with
+the `bot` and `applications.commands` scopes, and View Channel, Send Messages,
+Attach Files and Embed Links permissions. No privileged intents are needed.
 
-## Discord commands
+## Parent integration
 
-- `/publish channel`: the **server owner** selects the one text channel that
-  will receive announcements. The bot must have View Channel, Send Messages,
-  and Embed Links permission. Running it again replaces the selection.
-- `/unpublish`: the server owner disables announcements for that server.
-- `/broadcast message title [thumbnail] [thumbnail_url]`: the **bot application
-  owner** sends an embed to the selected channel in each subscribed server.
-  Disnake checks application ownership (including its team ownership rules).
-  Server administrator status does not grant access to these owner-only actions.
+The parent owns login, verified Discord account linking, secrets, and the web
+listener. Pass an async `resolve_user_id(request)` that returns the logged-in
+user's verified Discord ID from the parent's session. Do not take it directly
+from a request header, URL, or form field. The small owner check stays here so
+channel discovery and publishing consistently enforce the owner-only rule.
+No resolver or no identity means HTTP 401. Other owners' channels are omitted
+from listings and return the same HTTP 404 as unknown channels when publishing.
+Ownership is checked against the bot's current gateway cache on every request.
 
-Servers start unsubscribed. There is no automatic system-channel or first-channel
-fallback. Deleted or inaccessible selected channels are skipped; the server owner
-must select a usable channel again. Choices persist in `channels.sqlite3` beside
-`main.py`; keep this file on persistent storage and do not commit it.
-
-Choose a PNG, JPG, GIF or WebP thumbnail upload (at most 25 MiB), or a direct,
-publicly accessible HTTP(S) image URL. Choose only one. Uploads also require
-Attach Files permission and must fit each destination server's upload limit.
-Each subscribed server receives at most one copy per broadcast invocation.
-A failed Discord delivery does not stop delivery to other servers. A private
-summary reports sent and skipped/failed counts. Only one broadcast runs at a time.
-
-Confirmations and errors are private. Mentions do not ping users or roles.
-Publishing commands and delivery live in `publisher.py`; command errors are
-handled separately in `error_handler.py`.
-
-Migration: the old `/publish message title ...` command is now `/broadcast`.
-Every server owner must opt in with `/publish channel` after upgrading.
-
-## Integration and HTTP API
-
-The parent application owns authentication and access control. This module's
-internal HTTP routes do not require a separate API key. Mount them behind the
-parent application's access controls, not directly on a public listener.
-
-From the repository root, use `bot.discord.main.create_bot(store_path=...)` to build the Discord client and
-`bot.discord.api_server.create_app(bot)` to build its aiohttp application. Configure the upload limit on the **parent** app when mounting it:
+Create the client inside the running parent event loop. With this project directory on the Python import path:
 
 ```python
+import asyncio
+from contextlib import suppress
 from aiohttp import web
-from bot.discord.api_server import MAX_UPLOAD, create_app
+from main import create_bot
+from api_server import MAX_REQUEST, create_app
 
-# bot is the client returned by create_bot(...).
-app = web.Application(client_max_size=MAX_UPLOAD)
-app.add_subapp("/discord/", create_app(bot))
+async def build_app(token, resolve_user_id, auth_middleware):
+    bot = create_bot()
+    app = web.Application(
+        middlewares=[auth_middleware], client_max_size=MAX_REQUEST)
+    app.add_subapp('/discord/', create_app(bot, resolve_user_id=resolve_user_id))
+
+    async def discord_lifecycle(app):
+        task = asyncio.create_task(bot.start(token))
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            finally:
+                await bot.close()
+
+    app.cleanup_ctx.append(discord_lifecycle)
+    return app
 ```
 
-The parent's default limit is 1 MiB; the child app's limit does not override it.
-For an existing parent app, set `client_max_size` when that app is constructed.
+The parent awaits this app factory on the same loop used to serve the app and
+supplies its real authentication middleware and session resolver. Keep these
+routes behind that backend. The parent handles service supervision and should
+observe connection readiness and unexpected bot-task failures. `/health` reports
+`{"ready": false}` while Discord is disconnected; publishing returns HTTP 503.
+Importing this module reads no `.env`, opens no database, and starts no listener.
+There is no standalone command; the parent owns startup/shutdown.
 
-Run `bot.start(token)` as a task in the parent's async lifecycle and call
-`await bot.close()` and await that task during shutdown. Pass a persistent
-SQLite path for channel selections. Importing `main` does not load `.env`,
-start the bot, or open a port.
+## API
 
-For local testing, `python main.py` still runs both the bot and the API at
-http://127.0.0.1:8080. `API_HOST` and `API_PORT` can override that address.
-Discord's server-owner and bot-owner checks still apply to slash commands.
+| Route | Input | Result |
+| --- | --- | --- |
+| `GET /discord/health` | None | Discord connection readiness (HTTP 200; inspect `ready`) |
+| `GET /discord/channels` | Authenticated parent session | Owned servers and channels the bot can view and send to; IDs are strings |
+| `POST /discord/publish` | Multipart `channel_id`, optional `message`, one `media` file | HTTP 201 with message ID, channel ID, URL and `delivery_status: "delivered"` |
 
-- `GET /health`: Discord connection status.
-- `GET /channels`: joined servers and accessible text channels, with string IDs.
-- `POST /publish`: authenticated direct publishing to the supplied channel
-  (separate from the opted-in slash-command broadcast). JSON containing `channel_id` (string) and `message`.
-  Alternatively multipart form fields `channel_id`, optional `message`, and
-  one uploaded `media` file. Text is limited to 2000 characters. Uploads are
-  limited to the smaller of 25 MiB and the Discord server's upload limit.
-  Files are uploaded by the caller; server-side file paths and URL downloads
-  are not accepted. No format conversion occurs.
+`message` is the prepared caption, at most 2000 characters. Text-only publishing
+also accepts JSON with `channel_id` and `message`. Supply text, media, or both.
+Mentions do not ping users/roles. The file is forwarded unchanged; the parent
+prepares suitable formats, aspect ratios, and captions. No server file paths or
+URL downloads are accepted. Repeated multipart fields are rejected.
 
-Replace the channel ID below with one from `/channels`.
+Files may be up to the smaller of **24 MiB** and the destination server's limit.
+The full request budget is **25 MiB**, leaving room for framing and captions.
+Configure the parent with `MAX_REQUEST`; its default 1 MiB limit otherwise wins.
+Discord can still reject content or uploads; those errors are returned to the caller.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8080/channels
-Invoke-RestMethod http://127.0.0.1:8080/publish -Method Post -ContentType 'application/json' -Body '{"channel_id":"123456789012345678","message":"Hello from outside Discord!"}'
-```
+For several selected destinations, the parent makes one publish request per
+channel and tracks each result. This deliberately avoids a second batch/job
+system inside the integration. `/channels` is channel discovery, not a saved
+connection list; the parent stores the user's selections and any delivery records.
 
-Media upload example:
+## Failed or uncertain delivery
 
-```powershell
-curl.exe http://127.0.0.1:8080/publish -F "channel_id=123456789012345678" -F "message=New video" -F "media=@C:\Videos\clip.mp4"
-```
+A send timeout, connection failure, or Discord server error returns HTTP 502 with
+`delivery_status: "unknown"`, `retryable: false`, and advice to check Discord
+before retrying. Treat a lost HTTP response as unknown too. The parent must not
+blindly retry publish POSTs. No extra retry loop is added here, but Disnake may
+retry internally; this adapter does not guarantee duplicate-free delivery.
 
-Successful publishing returns HTTP 201 with `message_id`, `channel_id`, and
-`url`. Errors return JSON with `error` and an appropriate HTTP status. A 503
-means Discord isn't connected yet. A failed/ambiguous delivery should be
-checked in Discord before retrying: requests have no deduplication key.
+## Discord slash command
 
-Run all mocked checks from this directory: `python -m unittest discover -v`.
-These tests do not connect to Discord or send real announcements.
+`/publish [message] [media]` sends the caption and/or uploaded image/video to
+**every eligible text channel in every server owned by the invoking user where
+the bot is installed**. This includes private text channels the bot can access.
+It is not limited to the channel/server where the command is invoked.
+
+Only server ownership qualifies; administrator permissions or bot-application
+ownership do not grant access to another owner's servers. The command must be
+invoked in a server. It needs a caption, a file, or both; captions have a 2000
+character limit and files a 24 MiB limit. Individual destination upload limits
+and View Channel, Send Messages, and Attach Files permissions are respected.
+Text-only sends do not require Attach Files or Embed Links.
+
+There is no channel selection, opt-in subscription, `/broadcast`, or `/unpublish`
+command. Only `/publish` is registered. The library syncs the new command set on
+connection; Discord may take time to show the changes. Existing SQLite files
+are left untouched but unused; `create_bot()` no longer accepts `store_path`.
+
+Each invocation targets each eligible text channel once, continues after a send
+failure, suppresses mentions, and reports a private summary. One publish runs
+per user at a time. Library retries can still cause duplicates after ambiguous
+responses; check Discord before retrying. Threads/forums are not destinations.
+The dashboard API remains separate and publishes to explicitly selected channels.
+
+## Tests
+
+Run `python -m unittest discover -v` from this directory. Tests use fake Discord
+sends and do not log in or publish real content. Validate the actual parent session
+integration and an image/video upload in a test server before deployment.

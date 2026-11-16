@@ -1,144 +1,76 @@
-"""Guild subscriptions and owner-only announcement delivery."""
+"""Publish media/captions to text channels in servers owned by the caller."""
 
 import asyncio
 import io
 import logging
-from contextlib import closing, contextmanager
-from dataclasses import dataclass
-from pathlib import Path
-from urllib.parse import urlparse
+from contextlib import closing
 
 import disnake
 from aiohttp import ClientError
 from disnake.ext import commands
 
+if __package__:
+    from .api_server import MAX_UPLOAD
+else:
+    from api_server import MAX_UPLOAD
+
 logger = logging.getLogger(__name__)
-MAX_THUMBNAIL = 25 * 1024 * 1024
-
-
-def require_guild_owner(inter):
-    if inter.guild is None:
-        raise commands.NoPrivateMessage()
-    if inter.author.id != inter.guild.owner_id:
-        raise commands.CheckFailure("Only the server owner can configure announcements.")
-    return True
-
-
-def can_send(channel, *, needs_attachment=False):
-    permissions = channel.permissions_for(channel.guild.me)
-    return (permissions.view_channel and permissions.send_messages and permissions.embed_links
-            and (not needs_attachment or permissions.attach_files))
-
-
-def broadcast_channel(guild, store, *, needs_attachment=False):
-    channel_id = store.get(guild.id)
-    channel = guild.get_channel(channel_id) if channel_id is not None else None
-    if isinstance(channel, disnake.TextChannel) and can_send(channel, needs_attachment=needs_attachment):
-        return channel
-    return None
-
-
-@dataclass(frozen=True)
-class Thumbnail:
-    url: str | None = None
-    filename: str | None = None
-    data: bytes | None = None
-
-    @contextmanager
-    def open_file(self):
-        if self.data is None:
-            yield None
-            return
-        # Disnake File restores the caller-owned stream's close method;
-        # the outer context owns and closes the stream itself.
-        with io.BytesIO(self.data) as stream:
-            with closing(disnake.File(stream, filename=self.filename)) as file:
-                yield file
-
-
-async def prepare_thumbnail(url=None, attachment=None):
-    if url and attachment is not None:
-        raise commands.BadArgument("Choose either a thumbnail file or a URL.")
-    if attachment is not None:
-        extension = Path(attachment.filename).suffix.lower()
-        if extension not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-            raise commands.BadArgument("Choose a PNG, JPG, GIF or WebP thumbnail.")
-        if attachment.size > MAX_THUMBNAIL:
-            raise commands.BadArgument("Thumbnail must be at most 25 MiB.")
-        data = await attachment.read()
-        if len(data) > MAX_THUMBNAIL:
-            raise commands.BadArgument("Thumbnail must be at most 25 MiB.")
-        filename = "thumbnail" + extension
-        return Thumbnail("attachment://" + filename, filename, data)
-    if url:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise commands.BadArgument("Thumbnail must be a direct HTTP or HTTPS image URL.")
-    return Thumbnail(url=url)
-
-
-async def send_broadcast(channel, embed, *, file=None):
-    try:
-        await channel.send(embed=embed, file=file, allowed_mentions=disnake.AllowedMentions.none())
-        return True
-    except (disnake.HTTPException, ClientError, asyncio.TimeoutError, OSError):
-        logger.warning("Broadcast failed in channel %s", channel.id)
-        return False
+SEND_ERRORS = (disnake.HTTPException, ClientError, asyncio.TimeoutError, OSError)
 
 
 class Publisher(commands.Cog):
-    def __init__(self, store):
-        self.store = store
-
-    @commands.slash_command(description="Select this server's announcement channel (server owner only).")
+    @commands.slash_command(description="Publish to all text channels in servers you own where this bot is installed.")
     @commands.guild_only()
-    @commands.check(require_guild_owner)
-    async def publish(self, inter: disnake.ApplicationCommandInteraction, channel: disnake.TextChannel):
-        if channel.guild.id != inter.guild.id:
-            raise commands.BadArgument("Choose a text channel in this server.")
-        if not can_send(channel):
-            raise commands.BadArgument("The bot needs View Channel, Send Messages and Embed Links there.")
-        self.store.set(inter.guild.id, channel.id)
-        await inter.response.send_message(f"Announcements will be sent to {channel.mention}.", ephemeral=True)
-
-    @commands.slash_command(description="Stop announcements for this server (server owner only).")
-    @commands.guild_only()
-    @commands.check(require_guild_owner)
-    async def unpublish(self, inter: disnake.ApplicationCommandInteraction):
-        self.store.remove(inter.guild.id)
-        await inter.response.send_message("Announcements disabled for this server.", ephemeral=True)
-
-    @commands.slash_command(description="Send an announcement to subscribed servers (bot owner only).")
-    @commands.guild_only()
-    @commands.is_owner()
-    @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
-    async def broadcast(
+    @commands.max_concurrency(1, per=commands.BucketType.user, wait=False)
+    async def publish(
         self,
         inter: disnake.ApplicationCommandInteraction,
-        message: str = commands.Param(min_length=1, max_length=4096),
-        title: str = commands.Param(min_length=1, max_length=256),
-        thumbnail_url: str = commands.Param(default=None, max_length=2048),
-        thumbnail: disnake.Attachment = None,
+        message: str = commands.Param(default=None, max_length=2000),
+        media: disnake.Attachment = None,
     ):
-        if not message.strip() or not title.strip():
-            raise commands.BadArgument("Message and title cannot be blank.")
+        if not (message and message.strip()) and media is None:
+            raise commands.BadArgument("Provide a caption, a media file, or both.")
+        guilds = [g for g in inter.bot.guilds if g.owner_id == inter.author.id]
+        if not guilds:
+            raise commands.CheckFailure("The bot must be installed in a server you own.")
+        if media is not None and media.size > MAX_UPLOAD:
+            raise commands.BadArgument("Media must be at most 24 MiB.")
         await inter.response.defer(ephemeral=True)
-        image = await prepare_thumbnail(thumbnail_url, thumbnail)
-        embed = disnake.Embed(title=title, description=message)
-        if image.url:
-            embed.set_thumbnail(url=image.url)
-        sent = 0
-        skipped = 0
-        for guild in list(inter.bot.guilds):
-            channel = broadcast_channel(guild, self.store, needs_attachment=image.data is not None)
-            if channel is None or (image.data is not None and len(image.data) > guild.filesize_limit):
-                skipped += 1
-                continue
-            with image.open_file() as file:
-                if await send_broadcast(channel, embed, file=file):
-                    sent += 1
-                else:
+        data = await media.read() if media is not None else None
+        if data is not None and len(data) > MAX_UPLOAD:
+            raise commands.BadArgument("Media must be at most 24 MiB.")
+        sent = skipped = 0
+        for guild in guilds:
+            for channel in list(guild.text_channels):
+                # Recheck ownership in case it changed while an earlier send awaited.
+                permissions = channel.permissions_for(guild.me)
+                if (guild.owner_id != inter.author.id or not permissions.view_channel
+                        or not permissions.send_messages
+                        or (data is not None and (not permissions.attach_files
+                                                 or len(data) > guild.filesize_limit))):
                     skipped += 1
-        await inter.edit_original_response(
-            content=f"Broadcast sent to {sent} server(s). Skipped or failed: {skipped}."
-        )
+                    continue
+                kwargs = dict(content=message or None, allowed_mentions=disnake.AllowedMentions.none())
+                try:
+                    if data is None:
+                        await channel.send(**kwargs)
+                    else:
+                        with io.BytesIO(data) as stream:
+                            with closing(disnake.File(stream, filename=media.filename)) as file:
+                                await channel.send(**kwargs, file=file)
+                    sent += 1
+                except SEND_ERRORS:
+                    logger.warning("Delivery failed or unconfirmed in channel %s", channel.id)
+                    skipped += 1
+        summary = f"Published to {sent} channel(s). Skipped, failed or unconfirmed: {skipped}."
+        if skipped:
+            summary += " Check Discord before retrying."
+        logger.info("Publish result: %s", summary)
+        try:
+            await inter.edit_original_response(content=summary)
+        except SEND_ERRORS:
+            logger.warning("Publishing finished but confirmation failed: %s", summary)
+            try:
+                await inter.followup.send(summary + " Check Discord before repeating.", ephemeral=True)
+            except SEND_ERRORS:
+                logger.warning("Could not deliver confirmation; result is recorded above.")
