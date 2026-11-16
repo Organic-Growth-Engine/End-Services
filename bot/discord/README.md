@@ -9,6 +9,32 @@ Requires Python 3.10+ and the packages in `requirements.txt`. Invite the bot wit
 the `bot` and `applications.commands` scopes, and View Channel, Send Messages,
 Attach Files and Embed Links permissions. No privileged intents are needed.
 
+## Run standalone and test in Discord
+
+In PowerShell, open this project directory and run:
+
+```powershell
+python -m pip install -r requirements.txt
+python main.py
+```
+
+Before starting, put `BOT_TOKEN=your_bot_token` in `.env` beside `main.py`.
+An existing `BOT_TOKEN` environment variable takes precedence. Keep the token
+private; `.env` is ignored by Git. No channel ID is needed.
+
+Invite the bot to a test server you own with the scopes and permissions above.
+Keep the terminal open and wait for the connected message. The `/publish`
+command may take time to appear while Discord syncs commands. Try a short
+message first, then attach a small image or video in the `media` option.
+Check the destination channels and the private delivery summary. Stop with Ctrl+C.
+
+**A test publish sends to every eligible text channel in every server you own
+where this bot is installed, not just the channel where you run it.** Use a
+separate test bot installed only in test servers to keep test posts contained.
+
+Standalone mode runs Discord slash commands only and opens no HTTP listener.
+Dashboard HTTP routes are mounted by the parent application as described below.
+
 ## Parent integration
 
 The parent owns login, verified Discord account linking, secrets, and the web
@@ -57,7 +83,7 @@ routes behind that backend. The parent handles service supervision and should
 observe connection readiness and unexpected bot-task failures. `/health` reports
 `{"ready": false}` while Discord is disconnected; publishing returns HTTP 503.
 Importing this module reads no `.env`, opens no database, and starts no listener.
-There is no standalone command; the parent owns startup/shutdown.
+When integrated, the parent owns startup/shutdown; do not call the standalone `main()`.
 
 ## API
 

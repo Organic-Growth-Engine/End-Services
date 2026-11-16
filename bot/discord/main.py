@@ -1,6 +1,9 @@
 """Discord client factory for the parent application's async lifecycle."""
 
 import asyncio
+import logging
+import os
+from pathlib import Path
 
 import disnake
 from disnake.ext import commands
@@ -30,3 +33,31 @@ def create_bot():
     client.add_cog(Publisher())
     client.add_cog(ErrorHandler())
     return client
+
+
+async def main():
+    """Run slash commands locally; parent integrations use create_bot() instead."""
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / '.env')
+    token = os.getenv('BOT_TOKEN', '').strip()
+    if not token:
+        raise ValueError('Set BOT_TOKEN in .env beside main.py or in your environment.')
+    bot = create_bot()
+
+    @bot.event
+    async def on_ready():
+        logging.info('Connected as %s. Use /publish in Discord.', bot.user)
+
+    try:
+        await bot.start(token)
+    finally:
+        await bot.close()
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

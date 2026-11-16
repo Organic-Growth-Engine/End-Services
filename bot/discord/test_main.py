@@ -1,10 +1,11 @@
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from main import create_bot
+from main import create_bot, main
 
 
 class FactorySyncTests(unittest.TestCase):
@@ -35,6 +36,32 @@ class FactoryAsyncTests(unittest.IsolatedAsyncioTestCase):
                 bot._sync_application_commands.assert_awaited_once()
             finally:
                 await bot.close()
+
+
+class StandaloneTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_token_does_not_create_bot(self):
+        with patch('dotenv.load_dotenv'), patch.dict(os.environ, {'BOT_TOKEN': ' '}), \
+                patch('main.create_bot') as factory:
+            with self.assertRaisesRegex(ValueError, 'BOT_TOKEN'):
+                await main()
+            factory.assert_not_called()
+
+    async def test_start_and_cleanup_on_exit_failure_and_cancellation(self):
+        for failure in (None, RuntimeError('login failed'), asyncio.CancelledError()):
+            bot = Mock()
+            bot.start = AsyncMock(side_effect=failure)
+            bot.close = AsyncMock()
+            with patch('dotenv.load_dotenv') as load, \
+                    patch.dict(os.environ, {'BOT_TOKEN': 'test-only-token'}), \
+                    patch('main.create_bot', return_value=bot):
+                if failure is None:
+                    await main()
+                else:
+                    with self.assertRaises(type(failure)):
+                        await main()
+                self.assertEqual(load.call_args.args[0], Path(__file__).resolve().parent / '.env')
+                bot.start.assert_awaited_once_with('test-only-token')
+                bot.close.assert_awaited_once()
 
 
 if __name__ == '__main__':
