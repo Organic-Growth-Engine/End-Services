@@ -72,7 +72,7 @@ async def download(
     """Stream a media URL into a temporary file, enforcing X's type and size limits."""
     url = str(item.url)
     limit, allowed = _limits(item.type)
-    file = tempfile.SpooledTemporaryFile(max_size=GIF_LIMIT)  # noqa: SIM115 - returned to the caller, who closes it
+    file = tempfile.SpooledTemporaryFile(max_size=GIF_LIMIT)  # noqa: SIM115
     try:
         async with http.stream("GET", url) as response:
             if response.is_error:
@@ -104,7 +104,7 @@ async def download(
         file.close()
         raise MediaError(f"{url} is empty")
     file.seek(0)
-    return file, size, mime
+    return file, size, mime  # type: ignore
 
 
 class XPublisher:
