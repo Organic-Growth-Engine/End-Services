@@ -37,7 +37,10 @@ def ok(request: httpx.Request) -> httpx.Response:
 
 
 def by_port(request: httpx.Request) -> str:
-    return {8001: "youtube", 8000: "x", 8002: "telegram"}[request.url.port]
+    return {8001: "youtube", 8000: "x", 8002: "telegram", 8003: "facebook", 8004: "instagram",
+            8005: "discord"}[
+        request.url.port
+    ]
 
 
 def test_posts_to_every_platform_and_maps_fields():
@@ -48,6 +51,7 @@ def test_posts_to_every_platform_and_maps_fields():
     assert job["status"] == JobStatus.SUCCEEDED
     assert {p: t["status"] for p, t in job["targets"].items()} == {
         "youtube": "succeeded", "x": "succeeded", "telegram": "succeeded",
+        "facebook": "succeeded", "instagram": "succeeded", "discord": "succeeded",
     }
     calls = {by_port(r): r for r in seen}
 
@@ -61,6 +65,16 @@ def test_posts_to_every_platform_and_maps_fields():
     assert json.loads(calls["x"].content) == {
         "text": "Launch day\nmore", "media": [VIDEO], "allow_url": False,
     }
+    assert json.loads(calls["facebook"].content) == {
+        "message": "Launch day\nmore", "media": [{"type": "VIDEO", "url": VIDEO["url"]}],
+    }
+    # A single Instagram video is published as a reel.
+    assert json.loads(calls["instagram"].content) == {
+        "caption": "Launch day\nmore", "media": [{"type": "REELS", "url": VIDEO["url"]}],
+    }
+    assert json.loads(calls["discord"].content) == {
+        "content": "Launch day\nmore", "media": [VIDEO],
+    }
     tg = json.loads(calls["telegram"].content)
     assert tg["content"] == "Launch day\nmore"
     assert tg["media"] == [{"type": "video", "url": VIDEO["url"]}]
@@ -71,7 +85,8 @@ def test_skips_platforms_the_post_does_not_suit():
     job, seen = run({"text": "hello"}, ok)
     yt = job["targets"]["youtube"]
     assert yt["status"] == TargetStatus.SKIPPED and "credentials" in yt["detail"]
-    assert {by_port(r) for r in seen} == {"x", "telegram"}
+    assert job["targets"]["instagram"]["status"] == TargetStatus.SKIPPED  # no media
+    assert {by_port(r) for r in seen} == {"x", "telegram", "facebook", "discord"}
     assert job["status"] == JobStatus.SUCCEEDED
 
     job, _ = run({"text": "doc", "media": [{"type": "document", "url": "https://e.com/a.pdf"}]}, ok)
@@ -141,6 +156,71 @@ def test_api_returns_job_and_status_endpoint(monkeypatch):
         created = client.post("/posts", json={"text": "hi"})
         assert created.status_code == 202
         job_id = created.json()["id"]
-        assert set(created.json()["targets"]) == {"youtube", "x", "telegram"}
+        assert set(created.json()["targets"]) == {
+            "youtube", "x", "telegram", "facebook", "instagram", "discord",
+        }
         assert client.get(f"/posts/{job_id}").status_code == 200
         assert client.get("/posts/nope").status_code == 404
+
+
+IMG = {"type": "image", "url": "https://cdn.example.com/a.jpg", "alt_text": "a cat"}
+IMG2 = {"type": "image", "url": "https://cdn.example.com/b.jpg"}
+
+
+def test_meta_photo_posts_and_carousels():
+    job, seen = run({"text": "pics", "media": [IMG, IMG2], "targets": ["facebook", "instagram"]}, ok)
+    assert job["status"] == JobStatus.SUCCEEDED
+    calls = {by_port(r): json.loads(r.content) for r in seen}
+    assert calls["facebook"] == {"message": "pics", "media": [
+        {"type": "IMAGE", "url": IMG["url"], "alt_text": "a cat"},
+        {"type": "IMAGE", "url": IMG2["url"]},
+    ]}
+    assert calls["instagram"] == {"caption": "pics", "media": [
+        {"type": "IMAGE", "url": IMG["url"], "alt_text": "a cat"},
+        {"type": "IMAGE", "url": IMG2["url"]},
+    ]}
+
+    # A video inside an Instagram carousel stays VIDEO; Facebook can't mix them.
+    job, seen = run({"media": [IMG, VIDEO], "targets": ["facebook", "instagram"]}, ok)
+    assert job["targets"]["facebook"]["status"] == TargetStatus.SKIPPED
+    assert [m["type"] for m in json.loads(seen[0].content)["media"]] == ["IMAGE", "VIDEO"]
+
+
+def test_meta_skips_unsupported_media():
+    gif = {"type": "gif", "url": "https://cdn.example.com/a.gif"}
+    job, seen = run({"media": [gif], "targets": ["facebook", "instagram"]}, ok)
+    assert job["targets"]["instagram"]["status"] == TargetStatus.SKIPPED
+    assert json.loads(seen[0].content) == {"media": [{"type": "IMAGE", "url": gif["url"]}]}
+
+
+def test_youtube_uses_env_credentials_by_default(monkeypatch):
+    monkeypatch.setattr(adapters.config, "YOUTUBE_CREDENTIALS", CREDS)
+    job, seen = run({"text": "t", "media": [VIDEO], "targets": ["youtube"]}, ok)
+    assert job["targets"]["youtube"]["status"] == TargetStatus.SUCCEEDED
+    assert json.loads(seen[0].content) == CREDS
+
+    # Credentials in the request win over .env.
+    other = dict(CREDS, refresh_token="other")
+    _, seen = run({"text": "t", "media": [VIDEO], "targets": ["youtube"],
+                   "youtube": {"credentials": other}}, ok)
+    assert json.loads(seen[0].content) == other
+
+
+def test_youtube_env_credentials_parsing(monkeypatch):
+    from gateway import config
+
+    for name in ("YOUTUBE_CREDENTIALS_JSON", "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
+                 "YOUTUBE_REFRESH_TOKEN"):
+        monkeypatch.setenv(name, "")
+    assert config._youtube_credentials() is None
+    monkeypatch.setenv("YOUTUBE_CLIENT_ID", "id")
+    with pytest.raises(ValueError, match="YOUTUBE_CLIENT_SECRET"):
+        config._youtube_credentials()
+    monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "s")
+    monkeypatch.setenv("YOUTUBE_REFRESH_TOKEN", "r")
+    assert config._youtube_credentials() == {"client_id": "id", "client_secret": "s", "refresh_token": "r"}
+
+
+def test_all_skipped_is_its_own_status():
+    job, seen = run({"text": "hi", "targets": ["youtube", "instagram"]}, ok)
+    assert job["status"] == JobStatus.SKIPPED and seen == []

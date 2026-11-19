@@ -6,8 +6,10 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-Platform = Literal["youtube", "x", "telegram"]
-PLATFORMS: tuple[Platform, ...] = ("youtube", "x", "telegram")
+Platform = Literal["youtube", "x", "telegram", "facebook", "instagram", "discord"]
+PLATFORMS: tuple[Platform, ...] = (
+    "youtube", "x", "telegram", "facebook", "instagram", "discord",
+)
 
 
 class MediaType(StrEnum):
@@ -23,7 +25,9 @@ class Media(BaseModel):
 
     type: MediaType
     url: HttpUrl = Field(description="Public, direct link to the file.")
-    alt_text: str | None = Field(default=None, description="Used by X.")
+    alt_text: str | None = Field(
+        default=None, description="Image description (X, Facebook, Instagram, Discord)."
+    )
 
 
 class YouTubeOptions(BaseModel):
@@ -31,7 +35,8 @@ class YouTubeOptions(BaseModel):
 
     credentials: dict[str, Any] = Field(
         description="Authorized-user OAuth JSON (client_id, client_secret, "
-        "refresh_token) for the channel. Never stored or returned."
+        "refresh_token) for the channel. Overrides the .env credentials for this "
+        "request. Never stored or returned."
     )
 
 
@@ -96,6 +101,7 @@ class JobStatus(StrEnum):
     SUCCEEDED = "succeeded"  # every attempted platform succeeded
     PARTIAL = "partial"  # some succeeded, some failed
     FAILED = "failed"  # nothing was published
+    SKIPPED = "skipped"  # no platform could take this post
 
 
 class TargetResult(BaseModel):

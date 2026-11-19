@@ -51,7 +51,9 @@ class PublishResult(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not BOT_TOKEN or not CHAT_IDS:
-        raise RuntimeError("BOT_TOKEN and CHAT_IDS must be set (see .env.example).")
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS must be set (see .env.example)."
+        )
     async with Bot(BOT_TOKEN) as bot:
         app.state.bot = bot
         yield

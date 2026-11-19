@@ -66,7 +66,9 @@ async def run_job(job: Job, post: PostRequest, client: httpx.AsyncClient) -> Non
         *(_run_target(job, platform, post, client) for platform in job.targets)
     )
     statuses = {t.status for t in job.targets.values()}
-    if TargetStatus.SUCCEEDED not in statuses:
+    if statuses == {TargetStatus.SKIPPED}:
+        job.status = JobStatus.SKIPPED
+    elif TargetStatus.SUCCEEDED not in statuses:
         job.status = JobStatus.FAILED
     elif TargetStatus.FAILED in statuses:
         job.status = JobStatus.PARTIAL

@@ -9,7 +9,7 @@ and Telegram API calls.
 
 | File           | Purpose                                                           |
 | -------------- | ----------------------------------------------------------------- |
-| `config.py`    | Loads `.env` and exposes `BOT_TOKEN`, `OWNER_USER_ID`, `CHAT_IDS` |
+| `config.py`    | Loads the root `.env`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS`, … |
 | `publisher.py` | Validate and publish text, media or albums                        |
 | `worker.py`    | Publish a post to one chat or broadcast it to many chats          |
 | `main.py`      | Registers bot commands and fans out the payload                   |
@@ -23,27 +23,29 @@ and Telegram API calls.
 3. Configure the environment:
 
    ```bash
-   cp .env.example .env
-   # set BOT_TOKEN and CHAT_IDS
+   # set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS in the repo's root .env
    uv sync
    ```
 
-4. Optionally set `OWNER_USER_ID` to restrict command access to your account.
+4. Optionally set `TELEGRAM_OWNER_USER_ID` to restrict command access to your account.
    Start the bot and send `/id` to see your user id.
 
 ### Environment
 
+All settings live in the repo's root `.env`. The old unprefixed names
+(`BOT_TOKEN`, `CHAT_IDS`, `OWNER_USER_ID`) still work.
+
 | Variable        | Required | Description                                                               |
 | --------------- | -------- | ------------------------------------------------------------------------- |
-| `BOT_TOKEN`     | yes      | Bot token from @BotFather                                                 |
-| `CHAT_IDS`      | yes      | Destination chats as a JSON array                                         |
-| `OWNER_USER_ID` | no       | Only this Telegram user may run broadcasts; empty allows any private chat |
+| `TELEGRAM_BOT_TOKEN`     | yes      | Bot token from @BotFather                                        |
+| `TELEGRAM_CHAT_IDS`      | yes      | Destination chats as a JSON array                                |
+| `TELEGRAM_OWNER_USER_ID` | no | Only this Telegram user may run broadcasts; empty allows any private chat |
 
-`CHAT_IDS` must be a JSON array. It accepts both integer ids and `@username`
+`TELEGRAM_CHAT_IDS` must be a JSON array. It accepts both integer ids and `@username`
 values:
 
 ```bash
-CHAT_IDS=["-1001111111111", "-1002222222222", "@my_channel"]
+TELEGRAM_CHAT_IDS=["-1001111111111", "-1002222222222", "@my_channel"]
 ```
 
 ## Usage
@@ -66,14 +68,14 @@ Then send commands to the bot in a private chat:
 | `/id`                     | Show your user id and the current chat id               |
 | `/help`                   | Show command help                                       |
 
-The bot only reacts in private chats. If `OWNER_USER_ID` is set, commands from
+The bot only reacts in private chats. If `TELEGRAM_OWNER_USER_ID` is set, commands from
 other users are ignored.
 
 ## HTTP API
 
 Other services (such as the posting gateway) publish through a small HTTP API
-instead of chat commands. It uses the same `.env` and broadcasts to every chat
-in `CHAT_IDS`; it runs separately from the chat bot.
+instead of chat commands. It uses the same settings and broadcasts to every
+chat in `TELEGRAM_CHAT_IDS`; it runs separately from the chat bot.
 
 ```bash
 uv run uvicorn api:app --port 8002

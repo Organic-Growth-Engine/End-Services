@@ -166,8 +166,8 @@ def main() -> int:
     missing = [
         name
         for name, value in (
-            ("BOT_TOKEN", BOT_TOKEN),
-            ("CHAT_IDS", CHAT_IDS),
+            ("TELEGRAM_BOT_TOKEN", BOT_TOKEN),
+            ("TELEGRAM_CHAT_IDS", CHAT_IDS),
         )
         if not value
     ]

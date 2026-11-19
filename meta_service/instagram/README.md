@@ -8,8 +8,9 @@ API.
 
 ```bash
 uv sync
-cp .env.example .env  # then fill in the token and account id
-uv run uvicorn main:app --reload
+# fill in IG_ACCESS_TOKEN and IG_USER_ID in the repo's root .env
+# (cp ../../.env.example ../../.env if it doesn't exist yet)
+uv run uvicorn main:app --port 8004 --reload
 ```
 
 This service targets the **Instagram API with Unified Login** and the Facebook

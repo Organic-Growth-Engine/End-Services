@@ -36,8 +36,12 @@ class ServiceCall:
 
 
 def youtube(post: PostRequest, job_id: str) -> ServiceCall:
-    if post.youtube is None:
-        raise Skip("No YouTube credentials supplied (set 'youtube.credentials').")
+    credentials = post.youtube.credentials if post.youtube else config.YOUTUBE_CREDENTIALS
+    if credentials is None:
+        raise Skip(
+            "No YouTube credentials: send 'youtube.credentials' or set "
+            "YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN in .env."
+        )
     videos = [m for m in post.media if m.type == MediaType.VIDEO]
     if len(videos) != 1:
         raise Skip(f"YouTube needs exactly one video; the post has {len(videos)}.")
@@ -59,7 +63,7 @@ def youtube(post: PostRequest, job_id: str) -> ServiceCall:
             "title": title,
             "description": description,
         },
-        json=post.youtube.credentials,
+        json=credentials,
     )
 
 
@@ -97,7 +101,74 @@ def telegram(post: PostRequest, job_id: str) -> ServiceCall:
     )
 
 
-ADAPTERS = {"youtube": youtube, "x": x, "telegram": telegram}
+def facebook(post: PostRequest, job_id: str) -> ServiceCall:
+    types = {m.type for m in post.media}
+    unsupported = sorted(t.value for t in types - {MediaType.IMAGE, MediaType.GIF, MediaType.VIDEO})
+    if unsupported:
+        raise Skip(f"Facebook can't post {', '.join(unsupported)} media.")
+    videos = [m for m in post.media if m.type == MediaType.VIDEO]
+    if videos and len(post.media) > 1:
+        raise Skip("Facebook posts one video on its own; it can't be mixed with other media.")
+
+    media: list[dict[str, Any]] = []
+    for m in post.media:
+        if m.type == MediaType.VIDEO:
+            media.append({"type": "VIDEO", "url": str(m.url), "title": post.title})
+        else:  # Facebook photos accept GIFs.
+            media.append({"type": "IMAGE", "url": str(m.url), "alt_text": m.alt_text})
+
+    body = {
+        "message": post.text,
+        "media": [{k: v for k, v in item.items() if v is not None} for item in media],
+    }
+    return ServiceCall(
+        path="/publish",
+        timeout=config.DEFAULT_TIMEOUT,
+        json={k: v for k, v in body.items() if v is not None},
+    )
+
+
+def instagram(post: PostRequest, job_id: str) -> ServiceCall:
+    if not post.media:
+        raise Skip("Instagram needs at least one image or video.")
+    unsupported = sorted({m.type.value for m in post.media} - {"image", "video"})
+    if unsupported:
+        raise Skip(f"Instagram can't post {', '.join(unsupported)} media.")
+
+    carousel = len(post.media) > 1
+    media: list[dict[str, Any]] = []
+    for m in post.media:
+        if m.type == MediaType.IMAGE:
+            item = {"type": "IMAGE", "url": str(m.url), "alt_text": m.alt_text}
+        else:
+            # Instagram only publishes a single feed video as a reel; inside a
+            # carousel it stays a VIDEO item.
+            item = {"type": "VIDEO" if carousel else "REELS", "url": str(m.url)}
+        media.append({k: v for k, v in item.items() if v is not None})
+
+    body: dict[str, Any] = {"media": media}
+    if post.text is not None:
+        body["caption"] = post.text
+    return ServiceCall(path="/publish", timeout=config.DEFAULT_TIMEOUT, json=body)
+
+
+def discord(post: PostRequest, job_id: str) -> ServiceCall:
+    body: dict[str, Any] = {
+        "media": [m.model_dump(mode="json", exclude_none=True) for m in post.media],
+    }
+    if post.text is not None:
+        body["content"] = post.text
+    return ServiceCall(path="/publish", timeout=config.DEFAULT_TIMEOUT, json=body)
+
+
+ADAPTERS = {
+    "youtube": youtube,
+    "x": x,
+    "telegram": telegram,
+    "facebook": facebook,
+    "instagram": instagram,
+    "discord": discord,
+}
 
 
 def build_call(platform: Platform, post: PostRequest, job_id: str) -> ServiceCall:

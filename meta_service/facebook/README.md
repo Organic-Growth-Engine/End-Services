@@ -12,7 +12,7 @@ This is the Facebook worker of the social media manager's worker layer.
 | `main.py`            | FastAPI app, router registration, `FacebookError` → HTTP 502 handler                        |
 | `routes.py`          | HTTP routes and `FacebookClient` / `FacebookPublisher` dependencies                         |
 | `schemas.py`         | Pydantic request/response models and publishing limits                                      |
-| `config.py`          | Loads `FB_PAGE_ACCESS_TOKEN`, `FB_PAGE_ID`, `FB_API_VERSION`, `FB_API_BASE_URL` from `.env` |
+| `config.py`          | Loads `FB_PAGE_ACCESS_TOKEN`, `FB_PAGE_ID`, `FB_API_VERSION`, `FB_API_BASE_URL` from the root `.env` |
 | `facebook_client.py` | `FacebookClient` - thin async client over the Graph API publishing endpoints                |
 | `publisher.py`       | `FacebookPublisher` - routes a post to the matching publish flow                            |
 
@@ -20,8 +20,9 @@ This is the Facebook worker of the social media manager's worker layer.
 
 ```bash
 uv sync
-cp .env.example .env  # then fill in the Page access token and Page id
-uv run uvicorn main:app --reload
+# fill in FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID in the repo's root .env
+# (cp ../../.env.example ../../.env if it doesn't exist yet)
+uv run uvicorn main:app --port 8003 --reload
 ```
 
 The Page access token must be requested by someone who can perform the

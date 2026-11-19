@@ -5,33 +5,35 @@ the post into each service's own format, calls them all at the same time and
 reports the outcome per platform.
 
 ```
-client ──POST /posts──▶ gateway ──┬──▶ youtube   POST /upload    (:8001)
-        ◀── 202 + job id          ├──▶ x         POST /publish   (:8000)
-client ──GET /posts/{id}──▶       └──▶ telegram  POST /publish   (:8002)
+client ──POST /posts──▶ gateway ──┬──▶ youtube    POST /upload    (:8001)
+        ◀── 202 + job id          ├──▶ x          POST /publish   (:8000)
+client ──GET /posts/{id}──▶       ├──▶ telegram   POST /publish   (:8002)
+                                  ├──▶ facebook   POST /publish   (:8003)
+                                  ├──▶ instagram  POST /publish   (:8004)
+                                  └──▶ discord    POST /publish   (:8005)
 ```
 
 ## Run everything
 
-Each service runs in its own terminal:
+From the repo root (see the root README for setup):
 
 ```bash
-# YouTube (youtube/)
-uv run youtube                                   # :8001
-
-# X (x/, on the feature/twitter-service branch) — see x/README.md
-uv run uvicorn main:app                          # :8000 by default
-
-# Telegram HTTP API (bot/telegram/; needs BOT_TOKEN and CHAT_IDS in .env)
-uv run uvicorn api:app --port 8002
-
-# Gateway (gateway/)
-cp .env.example .env                             # optional; defaults match the ports above
-uv run --env-file .env gateway                   # :8080, docs at http://127.0.0.1:8080/docs
+./setup.sh      # once: installs every service, creates .env
+./run.sh        # starts every configured service + the gateway on :8080
 ```
 
-A platform whose service isn't running is reported as `failed` ("Could not
-reach ..."); the others still post. To disable one, set its URL to empty in
-`.env`, e.g. `X_URL=`.
+`run.sh` skips services whose credentials aren't in `.env` and tells the
+gateway, so those platforms show as `skipped`. A service that is configured
+but not running is reported as `failed` ("Could not reach ..."); the others
+still post. To turn a platform off, set its URL to empty in `.env`, e.g. `X_URL=`.
+
+To run the gateway on its own: `cd gateway && uv run gateway`.
+
+### YouTube credentials
+
+The gateway sends `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and
+`YOUTUBE_REFRESH_TOKEN` from `.env` with every YouTube upload. A request can
+send its own `youtube.credentials` instead, e.g. to post to another channel.
 
 ## `POST /posts`
 
@@ -39,8 +41,7 @@ reach ..."); the others still post. To disable one, set its URL to empty in
 {
   "text": "Launch day\nOur new app is out",
   "media": [{ "type": "video", "url": "https://cdn.example.com/launch.mp4" }],
-  "targets": ["youtube", "x", "telegram"],
-  "youtube": { "credentials": { "client_id": "...", "client_secret": "...", "refresh_token": "..." } },
+  "targets": ["youtube", "x", "telegram", "facebook", "instagram", "discord"],
   "x": { "allow_url": false, "made_with_ai": false },
   "telegram": { "parse_mode": "HTML" }
 }
@@ -53,7 +54,7 @@ reach ..."); the others still post. To disable one, set its URL to empty in
 | `targets`      | Platforms to post to. Omit to post everywhere.                                               |
 | `title`        | YouTube title. Defaults to the first line of `text` (cut to 100 characters).                 |
 | `description`  | YouTube description. Defaults to `text`.                                                     |
-| `youtube`      | `credentials`: the channel's authorized-user OAuth JSON. Used for this request only; never stored or returned. |
+| `youtube`      | Optional `credentials` (authorized-user OAuth JSON) overriding the `.env` channel for this request. Never stored or returned. |
 | `x`            | `allow_url` (X bills posts with links higher, so they're rejected unless `true`), `made_with_ai`. |
 | `telegram`     | `parse_mode`: `HTML`, `Markdown` or `MarkdownV2`.                                            |
 
@@ -78,6 +79,7 @@ The response is `202` with a job. Poll `GET /posts/{id}` until `status` isn't
 | `succeeded`  | Every platform that was attempted succeeded     |
 | `partial`    | Some succeeded, some failed                     |
 | `failed`     | Nothing was published                           |
+| `skipped`    | No platform could take this post (see `detail`) |
 
 Each platform's `response` is that service's own response body.
 
@@ -85,9 +87,16 @@ Each platform's `response` is that service's own response body.
 
 A platform is `skipped` (not called) when the post can't go there:
 
-- **YouTube**: no `youtube.credentials`, not exactly one `video`, or no title.
+- **YouTube**: no credentials (in `.env` or the request), not exactly one `video`, or no title.
 - **X**: the post has `document` or `audio` media.
+- **Facebook**: `document`/`audio` media, or a video mixed with other media
+  (a Facebook post is text, a link, photos, or one video).
+- **Instagram**: no media, or media other than `image`/`video`.
 - Any platform whose URL is empty in the configuration.
+
+Instagram only publishes a single feed video as a reel, so one `video` goes to
+Instagram as a reel; inside a carousel it stays a video. Discord takes every
+media type: images become embeds and other files are posted as links.
 
 Everything else, such as X's 280-character limit or Telegram's caption
 length, is checked by the service itself and shows up as `failed` with the

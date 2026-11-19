@@ -50,10 +50,15 @@ def _parse_user_id(raw: str) -> int | None:
         raise ValueError("OWNER_USER_ID must be an integer Telegram user id.") from exc
 
 
-BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
+def _env(name: str) -> str:
+    """Read TELEGRAM_<name>, falling back to the old unprefixed <name>."""
+    return os.getenv(f"TELEGRAM_{name}") or os.getenv(name) or ""
+
+
+BOT_TOKEN = _env("BOT_TOKEN").strip()
 
 # Optional. When set, only this Telegram user can issue broadcast commands.
-OWNER_USER_ID = _parse_user_id(os.getenv("OWNER_USER_ID") or "")
+OWNER_USER_ID = _parse_user_id(_env("OWNER_USER_ID"))
 
 # Every configured chat receives each broadcast. Must be a JSON array.
-CHAT_IDS = _parse_chat_ids(os.getenv("CHAT_IDS") or "")
+CHAT_IDS = _parse_chat_ids(_env("CHAT_IDS"))
