@@ -19,4 +19,4 @@ MAX_POST_LENGTH = int(os.getenv("X_MAX_POST_LENGTH", "280"))
 
 # Largest video this service will download before uploading. X allows up to 8 GB
 # (16 GB with Premium); keep this lower unless the host has the disk for it.
-MAX_VIDEO_BYTES = int(os.getenv("X_MAX_VIDEO_BYTES", "512 * 1024 * 1024"))
+MAX_VIDEO_BYTES = int(os.getenv("X_MAX_VIDEO_BYTES") or 512 * 1024 * 1024)

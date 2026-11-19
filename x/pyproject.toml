@@ -19,5 +19,5 @@ dev = [
     "responses>=0.25",
 ]
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 filterwarnings = ["ignore::UserWarning:twitter_text.*"]

@@ -30,8 +30,9 @@ through X's official Python SDK, [`xdk`](https://docs.x.com/xdks/python/overview
 
    ```bash
    uv sync
-   cp .env.example .env  # then fill in the four X_* credentials
-   uv run uvicorn main:app --reload
+   # fill in the four X_* credentials in the repo's root .env
+   # (cp ../.env.example ../.env if it doesn't exist yet)
+   uv run uvicorn main:app --app-dir src --port 8000 --reload
    ```
 
 Interactive docs: <http://127.0.0.1:8000/docs>
@@ -104,7 +105,7 @@ These apply to pay-per-use accounts ([changelog](https://docs.x.com/changelog)):
 
 - **Replies** are only allowed when the original post's author has @mentioned
   your account or quoted one of its posts. This affects `reply_to_post_id`.
-  Threads reply to your own posts; run `live_check.py --thread` to confirm that
+  Threads reply to your own posts; run `src/live_check.py --thread` to confirm that
   X allows this for your account.
 - **Quote posts** are not available, so this service doesn't support them.
 
@@ -129,8 +130,8 @@ uv run pytest
 ```
 
 The tests mock the X API at the HTTP layer, so they run the real SDK and spend
-no credits. To check real credentials, run `uv run live_check.py`, which looks
-up the account, or `uv run live_check.py --thread`, which posts a 2-post thread
+no credits. To check real credentials, run `uv run src/live_check.py`, which looks
+up the account, or `uv run src/live_check.py --thread`, which posts a 2-post thread
 and deletes it. Both ask before each paid step.
 
 ## Notes

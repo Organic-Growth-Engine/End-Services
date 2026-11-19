@@ -1,7 +1,7 @@
 """Check the service against the real X API with the credentials in .env.
 
-    uv run live_check.py            # account lookup only
-    uv run live_check.py --thread   # also post a 2-post thread, then delete it
+    uv run src/live_check.py            # account lookup only
+    uv run src/live_check.py --thread   # also post a 2-post thread, then delete it
 
 Each paid step asks for confirmation first. Costs are from
 https://docs.x.com/x-api/getting-started/pricing (they can change; the Developer
