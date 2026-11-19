@@ -13,6 +13,7 @@ and Telegram API calls.
 | `publisher.py` | Validate and publish text, media or albums                        |
 | `worker.py`    | Publish a post to one chat or broadcast it to many chats          |
 | `main.py`      | Registers bot commands and fans out the payload                   |
+| `api.py`       | HTTP API (`POST /publish`) for other services                     |
 
 ## Setup
 
@@ -67,6 +68,20 @@ Then send commands to the bot in a private chat:
 
 The bot only reacts in private chats. If `OWNER_USER_ID` is set, commands from
 other users are ignored.
+
+## HTTP API
+
+Other services (such as the posting gateway) publish through a small HTTP API
+instead of chat commands. It uses the same `.env` and broadcasts to every chat
+in `CHAT_IDS`; it runs separately from the chat bot.
+
+```bash
+uv run uvicorn api:app --port 8002
+```
+
+`POST /publish` takes the post format below and returns `200` with a result
+per chat (`published`, `total`, `results`). It returns `502` when every chat
+failed, and `422` for an invalid payload. `GET /health` is a health check.
 
 ## Post format
 

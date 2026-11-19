@@ -1,0 +1,29 @@
+[project]
+name = "gateway"
+version = "0.1.0"
+description = "One API that publishes a post to every platform service"
+readme = "README.md"
+authors = [
+    { name = "knownblackhat", email = "knownblackhat@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "uvicorn>=0.32,<1",
+]
+
+[project.scripts]
+gateway = "gateway.main:run"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

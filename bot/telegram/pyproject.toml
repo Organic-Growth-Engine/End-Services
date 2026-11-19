@@ -5,6 +5,8 @@ description = "Simple Telegram publishing integration"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115,<1",
     "python-dotenv>=1.2.4",
     "python-telegram-bot>=22.8",
+    "uvicorn>=0.32,<1",
 ]
