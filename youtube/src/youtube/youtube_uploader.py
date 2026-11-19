@@ -1,7 +1,7 @@
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Any, Callable, NotRequired, TypedDict
+from typing import Any, Callable, Literal, NotRequired, TypedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +14,7 @@ from googleapiclient.http import MediaFileUpload
 from youtube import config
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+Privacy = Literal["private", "unlisted", "public"]
 EXTENSIONS = {
     ".mp4",
     ".mov",
@@ -58,7 +59,7 @@ def load_credentials(info: dict[str, Any]) -> Credentials:
     return creds
 
 
-def validate(title: str, description: str, privacy: str, tags: list[str]) -> None:
+def validate(title: str, description: str, privacy: Privacy, tags: list[str]) -> None:
     if not title.strip() or len(title) > 100 or any(c in title for c in "<>"):
         raise ValueError("Title must contain 1-100 characters and no < or >.")
     if len(description.encode("utf-8")) > 5000 or any(c in description for c in "<>"):
@@ -146,7 +147,7 @@ def upload_video(
     channel_credentials: dict[str, Any],
     title: str | None = None,
     description: str = "",
-    privacy: str = "private",
+    privacy: Privacy = "private",
     tags: list[str] | None = None,
     made_for_kids: bool = False,
 ) -> UploadResult:
@@ -179,10 +180,10 @@ def upload_video(
                         "title": title,
                         "description": description,
                         "tags": tags,
-                        # "categoryId": "22",
+                        "categoryId": "22",
                     },
                     "status": {
-                        # "privacyStatus": privacy,
+                        "privacyStatus": privacy,
                         "selfDeclaredMadeForKids": made_for_kids,
                     },
                 },

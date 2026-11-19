@@ -1,65 +1,68 @@
-# YouTube upload component
+# YouTube upload service
 
-One request: send a video and authorized channel credentials to **POST /uploading**.
-No API-key header, login endpoint, browser consent flow, saved token store, or upload
-lock. The calling main app supplies authorization for the intended channel.
+Downloads a video from a URL and uploads it to a YouTube channel. The posting
+gateway calls it; you can also call it directly.
 
-## Run locally
+## Setup
 
-Python 3.11+. From this folder:
+1. In [Google Cloud Console](https://console.cloud.google.com/), enable
+   **YouTube Data API v3** and create an OAuth client of type **Desktop app**.
+   Download its JSON. If the OAuth consent screen is in **Testing**, add your
+   Google account as a test user.
+2. Get a refresh token for the channel:
 
-```powershell
-python -m pip install -r requirements.txt
-python -m uvicorn api:app --host 127.0.0.1 --port 8001
+   ```bash
+   uv sync
+   uv run python scripts/get_refresh_token.py path/to/client_secret.json
+   ```
+
+   Sign in with the account that owns the channel, then paste the three printed
+   `YOUTUBE_*` lines into the repo's root `.env`. The gateway sends them with
+   each upload.
+3. Run it: `./run.sh` from the repo root, or on its own with `uv run youtube`
+   (port 8001).
+
+While the consent screen is in **Testing**, Google expires refresh tokens after
+7 days; publish the app (or rerun step 2) to keep uploading. Videos uploaded
+from an unverified Google Cloud project are locked to private until the project
+passes Google's audit.
+
+## `POST /upload`
+
+```bash
+curl -X POST 'http://127.0.0.1:8001/upload?url=https://cdn.example.com/clip.mp4&file_id=1&title=Test&description=hello' \
+  -H 'Content-Type: application/json' \
+  -d '{"client_id": "...", "client_secret": "...", "refresh_token": "..."}'
 ```
 
-Open http://127.0.0.1:8001/docs, expand POST /uploading, and select:
+- `url` (query): a public, direct link to the video file, not a web page.
+- `file_id`, `title`, `description` (query). The title must be 1–100 characters.
+- Body: the channel's OAuth credentials. They are used for this request only,
+  refreshed in memory and never stored or returned.
 
-- `file`: the video.
-- `channel_credentials`: an authorized-user OAuth JSON file with `client_id`,
-  `client_secret`, and `refresh_token`. Existing `token` and `expiry` are optional.
+The video is streamed to a temporary folder (at most `YOUTUBE_MAX_VIDEO_BYTES`,
+default 2 GiB), uploaded as **private**, and the folder is deleted afterwards
+whether the upload worked or not. The file extension, and so the MIME type sent
+to YouTube, comes from the URL; unknown extensions default to `.webm`.
 
-These are the only required inputs. Title defaults to the original filename stem;
-privacy defaults to private. Description, tags, privacy, and made_for_kids are optional.
-The upload goes to the channel associated with the supplied OAuth authorization.
-A Google client-secret file alone is not channel authorization: the main app must
-obtain user consent with the youtube.upload scope and provide the refresh token.
-Expired access tokens are refreshed in memory. Credentials are never persisted or
-returned by this component. Invalid authorization must be renewed by the calling app.
+| Status | Meaning                                                        |
+| ------ | -------------------------------------------------------------- |
+| 201    | Uploaded: `video_id`, `url`, `status`, `message`               |
+| 400    | Bad URL, failed download, or invalid file/metadata             |
+| 409    | The channel authorization is invalid or revoked; reconnect it  |
+| 502    | YouTube rejected the upload, or another upstream failure       |
 
-```python
-import requests
+YouTube may still be processing the video after a 201. There's no retry or
+idempotency handling: after an unclear failure, check the channel before
+uploading again.
 
-with open("clip.mp4", "rb") as video, open("channel-credentials.json", "rb") as creds:
-    response = requests.post(
-        "http://127.0.0.1:8001/uploading",
-        files={"file": ("clip.mp4", video, "video/mp4"),
-               "channel_credentials": ("channel.json", creds, "application/json")},
-        timeout=(10, 7200),
-    )
-response.raise_for_status()
-print(response.json())
-```
-
-Success returns HTTP 201 with video_id, url, status, and message. YouTube processing
-may still be pending. The service does not delete uploaded videos.
-
-File and metadata validation remain in the uploader. MAX_VIDEO_BYTES defaults to
-2 GiB and can be configured through the environment. Temporary video copies and
-upload streams are closed on success and failure. FastAPI runs the synchronous
-endpoint in its worker pool; each request creates its own Google client.
-
-This is an internal component without its own authentication or request-header
-validation. The main app/deployment owns authentication, HTTPS, request-size limits,
-and concurrency limits. Multipart parsing happens before endpoint validation;
-configure ingress limits before remote deployment. There is no durable queue or
-idempotency handling; check the channel before retrying an ambiguous failure.
+This service has no authentication and downloads any URL it's given. Keep it
+on an internal network and only accept requests from the gateway.
 
 ## Tests
 
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m unittest discover -v
+```bash
+uv run python -m unittest discover tests
 ```
 
-Tests mock Google uploads and token refresh. They do not upload or delete videos.
+Google, the token refresh and the download are mocked; nothing is uploaded.

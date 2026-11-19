@@ -23,6 +23,11 @@ from youtube.youtube_uploader import (
 app = FastAPI(title="YouTube upload component", version="1.0")
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.post("/upload", status_code=201)
 async def upload(
     url: str, file_id: str, credentials: dict[str, Any], title: str, description: str
@@ -45,9 +50,9 @@ async def upload(
 
 
 def run() -> None:
-    """Entry point for `uv run youtube`; HOST and PORT come from the environment."""
+    """Entry point for `uv run youtube`; YOUTUBE_HOST/YOUTUBE_PORT override the address."""
     uvicorn.run(
         app,
-        host=os.getenv("HOST", "127.0.0.1"),
-        port=int(os.getenv("PORT", "8001")),
+        host=os.getenv("YOUTUBE_HOST", "127.0.0.1"),
+        port=int(os.getenv("YOUTUBE_PORT", "8001")),
     )
