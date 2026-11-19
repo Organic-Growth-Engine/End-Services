@@ -5,12 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from fastapi.testclient import TestClient
-from google.auth.exceptions import RefreshError
-
 import api
 import config
 import youtube_uploader as uploader
+from fastapi.testclient import TestClient
+from google.auth.exceptions import RefreshError
 
 CREDS = {"client_id": "test-id", "client_secret": "test-secret", "refresh_token": "test-refresh"}
 

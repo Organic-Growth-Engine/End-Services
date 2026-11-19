@@ -1,0 +1,31 @@
+[project]
+name = "youtube"
+version = "0.1.0"
+description = "FastAPI service that downloads a video from a URL and uploads it to YouTube"
+readme = "README.md"
+authors = [
+    { name = "knownblackhat", email = "knownblackhat@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "google-api-python-client>=2.150,<3",
+    "google-auth>=2.35,<3",
+    "httpx>=0.28,<1",
+    "python-multipart>=0.0.20,<1",
+    "requests>=2.32,<3",
+    "starlette>=0.46,<2",
+    "uvicorn>=0.32,<1",
+]
+
+[project.scripts]
+youtube = "youtube.main:run"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "google-api-python-client-stubs>=1.40.0",
+]
